@@ -63,12 +63,16 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .cs-date-cell{font-family:var(--mono);font-size:11.5px;color:var(--tx);cursor:help;border-bottom:1px dashed var(--brd2)}
 .cs-date-empty{color:var(--tx3);font-style:italic;border-bottom:none;cursor:default}
 
-.cs-years-wrap{display:flex;align-items:center;gap:6px}
-.cs-years-input{width:56px;height:26px;border:1px solid var(--brd);border-radius:var(--r);padding:0 6px;font-family:var(--mono);font-size:12px;text-align:center;outline:none}
-.cs-years-input:focus{border-color:var(--acc)}
-.cb-box{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1.5px solid var(--brd2);border-radius:3pt;background:var(--surf3);cursor:pointer;transition:all .12s;color:transparent;flex-shrink:0}
-.cb-box:hover{border-color:var(--acc-brd);background:var(--acc-bg)}
-.cb-box.on{border-color:var(--grn);background:var(--grn);color:#fff}
+.cell-edit-btn{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid transparent;border-radius:4pt;background:transparent;color:var(--tx3);cursor:pointer;flex-shrink:0;transition:all .1s;padding:0}
+.cell-edit-btn:hover{background:var(--acc-bg);color:var(--acc);border-color:var(--acc-brd)}
+.cell-edit-btn.save{color:var(--grn)}
+.cell-edit-btn.save:hover{background:var(--grn-bg);color:var(--grn);border-color:var(--grn-brd)}
+.cell-edit-btn.cancel{color:var(--red)}
+.cell-edit-btn.cancel:hover{background:var(--red-bg);color:var(--red);border-color:var(--red-brd)}
+.cell-edit-input{width:64px;height:26px;border:1px solid var(--acc);border-radius:var(--r);padding:0 6px;font-family:inherit;font-size:12px;color:var(--tx);outline:none;background:var(--surf);text-align:center}
+.cell-edit-wrap-inline{display:flex;align-items:center;gap:4px}
+.cs-years-view{display:flex;align-items:center;gap:6px}
+.cs-payments{display:flex;flex-wrap:wrap;gap:4px 8px}
 
 .cs-end-cell{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--tx)}
 .cs-end-empty{color:var(--tx3);font-weight:400;font-style:italic}
@@ -88,18 +92,6 @@ tr.cs-row-hidden td{background:var(--surf2)}
 
 #gTooltip{position:fixed;background:var(--tx);color:#fff;padding:6px 10px;border-radius:var(--r);font-size:11px;font-weight:400;white-space:pre;z-index:9999;pointer-events:none;display:none;box-shadow:0 4px 12px rgba(0,0,0,.15);line-height:1.4}
 
-.modal-overlay{position:fixed;inset:0;background:rgba(24,23,15,.35);display:none;align-items:center;justify-content:center;z-index:500}
-.modal-overlay.on{display:flex}
-.modal-box{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r2);max-width:640px;width:92%;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 12px 32px rgba(0,0,0,.18)}
-.modal-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--brd)}
-.modal-title{font-size:13px;font-weight:600}
-.modal-body{padding:12px 16px;overflow-y:auto;flex:1}
-.modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--brd)}
-.sync-item{padding:6px 0;border-bottom:1px solid var(--surf3);font-size:12px}
-.sync-item:last-child{border-bottom:none}
-.sync-item b{font-weight:600}
-.sync-empty{color:var(--tx3);font-size:12px;padding:8px 0}
-
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--brd2);border-radius:4pt}
@@ -114,7 +106,6 @@ tr.cs-row-hidden td{background:var(--surf2)}
       <span class="ph-title">Абонентское обслуживание</span>
       <div class="ph-actions">
         <button class="btn" id="btnShowHidden" onclick="toggleShowHidden()">Показать скрытые</button>
-        <button class="btn btn-primary" id="btnSync" onclick="openSyncModal()">Синхронизировать</button>
       </div>
     </div>
     <div class="reg-filter-bar">
@@ -133,22 +124,8 @@ tr.cs-row-hidden td{background:var(--surf2)}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.1.0</footer>
+<footer class="ver-footer">v0.2.0</footer>
 <div id="gTooltip"></div>
-
-<div class="modal-overlay" id="syncModal">
-  <div class="modal-box">
-    <div class="modal-head">
-      <span class="modal-title">Синхронизация с Tu_accounting</span>
-      <button class="eye-btn" onclick="closeSyncModal()">✕</button>
-    </div>
-    <div class="modal-body" id="syncBody"></div>
-    <div class="modal-foot">
-      <button class="btn" onclick="closeSyncModal()">Отмена</button>
-      <button class="btn btn-primary" id="syncApplyBtn" onclick="applySync()">Применить</button>
-    </div>
-  </div>
-</div>
 
 <script>
 /* ═══════════════════════════════════
@@ -200,12 +177,14 @@ const S = {
   records: [],        // строки Customer_subscription (текущий вид)
   sourceRows: [],      // строки Tu_accounting
   options: { ...DEFAULT_OPTIONS },
-  hiddenKeys: {},       // shipment_contract -> true
+  hiddenKeys: {},       // ключ группы (клиент+предмет договора) -> true
   showHidden: false,
-  syncPlan: null,
 };
 
 let firstLoadDone = false;
+let syncing = false;
+let editingYearsId = null;
+const AUTO_SYNC_INTERVAL_MS = 20000;
 
 /* ═══════════════════════════════════
    ПАРСИНГ ТЕКСТА ИЗ Tu_accounting
@@ -277,7 +256,12 @@ function computeGroupsFromSource(rows) {
   return Array.from(groups.values())
     .filter(g => g.client)
     .map(g => {
-      const parsed = g.docs.map(parseDocText).filter(Boolean);
+      // сортируем набор документов до сборки текста предмета договора, чтобы
+      // одинаковый набор документов давал одинаковый subject независимо от
+      // порядка строк в Tu_accounting — это ключ для слияния повторных
+      // договоров с тем же набором документации в одну строку виджета
+      const sortedDocs = g.docs.slice().sort((a, b) => a.localeCompare(b, 'ru'));
+      const parsed = sortedDocs.map(parseDocText).filter(Boolean);
       const subject = parsed.length
         ? parsed.map(p => p.docCode || p.docLabel ? `${p.product} — ${p.docLabel}` : p.product).join('; ')
         : '';
@@ -325,49 +309,24 @@ function computeSyncPlan() {
   return { creates, updates };
 }
 
-function openSyncModal() {
-  S.syncPlan = computeSyncPlan();
-  const body = document.getElementById('syncBody');
-  const { creates, updates } = S.syncPlan;
-  if (!creates.length && !updates.length) {
-    body.innerHTML = '<div class="sync-empty">Изменений нет — таблица уже соответствует Tu_accounting.</div>';
-  } else {
-    let html = '';
-    if (creates.length) {
-      html += `<div class="sync-item"><b>Новые строки (${creates.length}):</b></div>`;
-      html += creates.map(c => `<div class="sync-item">${esc(c.group.client)} — ${esc(c.group.shipment_contract)} <span style="color:var(--tx3)">(${esc(c.group.subject || 'без документов')})</span></div>`).join('');
-    }
-    if (updates.length) {
-      html += `<div class="sync-item"><b>Обновятся (${updates.length}):</b></div>`;
-      html += updates.map(u => `<div class="sync-item">${esc(u.group.client)} — ${esc(u.group.shipment_contract)}: ${esc(Object.keys(u.fields).join(', '))}</div>`).join('');
-    }
-    body.innerHTML = html;
-  }
-  document.getElementById('syncApplyBtn').disabled = !(creates.length || updates.length);
-  document.getElementById('syncModal').classList.add('on');
-}
-
-function closeSyncModal() {
-  document.getElementById('syncModal').classList.remove('on');
-  S.syncPlan = null;
-}
-
-async function applySync() {
-  if (!S.syncPlan) return;
-  const btn = document.getElementById('syncApplyBtn');
-  btn.disabled = true;
-  btn.textContent = 'Применение…';
+// применяется автоматически при любом изменении Tu_accounting/Customer_subscription —
+// без диалога подтверждения, по явному запросу пользователя (обычный человекочитаемый
+// список создаётся/обновляется только служебными полями, service_years/service_confirmed
+// синк никогда не трогает)
+async function autoSync() {
+  if (syncing || typeof grist === 'undefined') return;
+  syncing = true;
   try {
-    for (const c of S.syncPlan.creates) await grist.selectedTable.create({ fields: c.fields });
-    for (const u of S.syncPlan.updates) await grist.selectedTable.update({ id: u.id, fields: u.fields });
-    closeSyncModal();
+    const { creates, updates } = computeSyncPlan();
+    if (!creates.length && !updates.length) return;
+    setConn(true, 'Синхронизация…');
+    for (const c of creates) await grist.selectedTable.create({ fields: c.fields });
+    for (const u of updates) await grist.selectedTable.update({ id: u.id, fields: u.fields });
     await loadRecords();
   } catch (e) {
-    console.error('Ошибка синхронизации:', e);
-    alert('Не удалось применить синхронизацию: ' + e.message);
+    console.error('Ошибка автосинхронизации:', e);
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Применить';
+    syncing = false;
   }
 }
 
@@ -387,9 +346,16 @@ function initGrist() {
     S.hiddenKeys = S.options.hiddenKeys || {};
     renderTable();
   });
+  // Customer_subscription — таблица виджета, об изменениях в ней Grist сообщает напрямую
   grist.onRecords(() => { if (firstLoadDone) loadRecords(); });
 
-  Promise.all([loadRecords(), loadSource()]).then(() => { firstLoadDone = true; });
+  Promise.all([loadRecords(), loadSource()]).then(async () => {
+    firstLoadDone = true;
+    await autoSync();
+    // Tu_accounting — сторонняя таблица, onRecords по ней не приходит,
+    // поэтому опрашиваем её периодически и досинхронизируем автоматически
+    setInterval(async () => { await loadSource(); await autoSync(); }, AUTO_SYNC_INTERVAL_MS);
+  });
 }
 
 async function loadRecords() {
@@ -434,8 +400,8 @@ function setConn(ok, lbl) {
    HIDE / SHOW (состояние — в опциях виджета, как в notification_numbers)
 ═══════════════════════════════════ */
 function isHidden(key) { return !!S.hiddenKeys[String(key)]; }
-function setHidden(key, hidden) {
-  const k = String(key);
+function setHidden(encodedKey, hidden) {
+  const k = decodeURIComponent(encodedKey);
   if (hidden) S.hiddenKeys[k] = true; else delete S.hiddenKeys[k];
   grist.setOption('hiddenKeys', S.hiddenKeys);
   renderTable();
@@ -448,26 +414,58 @@ function toggleShowHidden() {
 }
 
 /* ═══════════════════════════════════
-   РЕДАКТИРОВАНИЕ: время обслуживания + подтверждение
+   РЕДАКТИРОВАНИЕ: время обслуживания — окно правки (карандаш → инпут → ✓/✕),
+   как в остальных наших Grist-виджетах. Сохранение и подтверждает срок:
+   service_confirmed выставляется вместе со service_years за один вызов.
 ═══════════════════════════════════ */
-async function updateServiceYears(id, value) {
-  const years = value === '' ? null : Number(value);
-  if (value !== '' && (isNaN(years) || years < 0)) { renderTable(); return; }
+function startEditYears(id) {
+  editingYearsId = id;
+  renderTable();
+  setTimeout(() => {
+    const el = document.getElementById(`yearsInput-${id}`);
+    if (el) { el.focus(); el.select(); }
+  }, 0);
+}
+
+function cancelEditYears() {
+  editingYearsId = null;
+  renderTable();
+}
+
+async function saveEditYears(id) {
+  const el = document.getElementById(`yearsInput-${id}`);
+  const raw = el ? el.value.trim() : '';
+  const years = raw === '' ? null : Number(raw);
+  if (raw !== '' && (isNaN(years) || years < 0)) { alert('Введите неотрицательное число лет'); return; }
   try {
-    await grist.selectedTable.update({ id, fields: { service_years: years } });
+    await grist.selectedTable.update({ id, fields: { service_years: years, service_confirmed: years !== null } });
+    editingYearsId = null;
+    renderTable();
   } catch (e) {
-    console.error('Ошибка обновления срока:', e);
+    console.error('Ошибка сохранения срока обслуживания:', e);
     alert('Не удалось сохранить срок: ' + e.message);
   }
 }
 
-async function toggleConfirmed(id, current) {
-  try {
-    await grist.selectedTable.update({ id, fields: { service_confirmed: !current } });
-  } catch (e) {
-    console.error('Ошибка подтверждения:', e);
-    alert('Не удалось сохранить подтверждение: ' + e.message);
-  }
+/* ═══════════════════════════════════
+   ГРУППИРОВКА ДЛЯ ОТОБРАЖЕНИЯ: повторные договоры одного клиента с тем же
+   набором документов (subject) схлопываются в одну строку виджета — их
+   оплаты показываются несколькими значениями в столбце «Оплата». Срок
+   обслуживания/дата окончания берутся из самого свежего договора группы
+   (primary), он же редактируется через окно правки.
+═══════════════════════════════════ */
+function groupRecordsForDisplay(rows) {
+  const map = new Map();
+  rows.forEach(r => {
+    const key = `${r.client || ''}␟${r.subject || ''}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(r);
+  });
+  return Array.from(map.entries()).map(([key, contracts]) => {
+    contracts.sort((a, b) => (b.advance_date || 0) - (a.advance_date || 0) ||
+      (b.invoice_date || 0) - (a.invoice_date || 0) || b.id - a.id);
+    return { key, client: contracts[0].client, subject: contracts[0].subject, primary: contracts[0], contracts };
+  });
 }
 
 /* ═══════════════════════════════════
@@ -484,47 +482,61 @@ function renderTable() {
       String(r.client || '').toLowerCase().includes(filter) ||
       String(r.subject || '').toLowerCase().includes(filter));
   }
-  rows = rows.filter(r => S.showHidden || !isHidden(r.shipment_contract));
-  rows.sort((a, b) => String(a.client || '').localeCompare(String(b.client || ''), 'ru') ||
-    String(a.shipment_contract || '').localeCompare(String(b.shipment_contract || ''), 'ru'));
 
-  if (!rows.length) {
-    container.innerHTML = '<div class="reg-empty">Нет данных. Нажмите «Синхронизировать», чтобы подтянуть договоры из Tu_accounting.</div>';
+  let groups = groupRecordsForDisplay(rows);
+  groups = groups.filter(g => S.showHidden || !isHidden(g.key));
+  groups.sort((a, b) => String(a.client || '').localeCompare(String(b.client || ''), 'ru') ||
+    String(a.subject || '').localeCompare(String(b.subject || ''), 'ru'));
+
+  if (!groups.length) {
+    container.innerHTML = '<div class="reg-empty">Нет данных. Договоры подтягиваются автоматически из Tu_accounting.</div>';
     return;
   }
 
-  const body = rows.map(r => {
-    const hidden = isHidden(r.shipment_contract);
-    const expired = r.service_end != null && r.service_end < today;
-    const advTip = `Договор отгрузки: ${r.shipment_contract || '—'}\nДата счета: ${fmtDate(r.invoice_date) || '—'}\nГлавный документ: ${r.main_doc || '—'}`;
-    const advDateStr = fmtDate(r.advance_date);
-    const endDateStr = fmtDate(r.service_end);
+  const body = groups.map(g => {
+    const hidden = isHidden(g.key);
+    const p = g.primary;
+    const expired = p.service_end != null && p.service_end < today;
+    const endDateStr = fmtDate(p.service_end);
     const rowClasses = ['', expired ? 'cs-row-expired' : '', hidden ? 'cs-row-hidden' : ''].filter(Boolean).join(' ');
+
+    const payments = g.contracts.map(c => {
+      const tip = `Договор отгрузки: ${c.shipment_contract || '—'}\nДата счета: ${fmtDate(c.invoice_date) || '—'}\nГлавный документ: ${c.main_doc || '—'}`;
+      const dateStr = fmtDate(c.advance_date) || 'не указано';
+      const emptyCls = c.advance_date == null ? ' cs-date-empty' : '';
+      return `<span class="cs-date-cell${emptyCls}" data-tip="${esc(tip)}" onmouseenter="showTooltip(this)" onmouseleave="hideTooltip()">${esc(dateStr)}</span>`;
+    }).join('');
+
+    const yearsCell = editingYearsId === p.id ? `
+        <div class="cell-edit-wrap-inline">
+          <input class="cell-edit-input mono" id="yearsInput-${p.id}" type="number" min="0" step="0.5"
+                 value="${p.service_years != null ? esc(String(p.service_years)) : ''}" placeholder="лет" autocomplete="off"
+                 onkeydown="if(event.key==='Enter')saveEditYears(${p.id});if(event.key==='Escape')cancelEditYears();">
+          <button class="cell-edit-btn save" onclick="saveEditYears(${p.id})" title="Сохранить">${checkSvg()}</button>
+          <button class="cell-edit-btn cancel" onclick="cancelEditYears()" title="Отмена">${xSvg()}</button>
+        </div>`
+      : `
+        <div class="cs-years-view">
+          <span>${p.service_years != null ? esc(String(p.service_years)) + ' г.' : '<span class="cs-date-empty">не задано</span>'}</span>
+          <button class="cell-edit-btn" onclick="startEditYears(${p.id})" title="Изменить срок">${pencilSvg()}</button>
+        </div>`;
+
     return `
     <tr class="${rowClasses}">
       <td>
-        <div class="cs-client">${esc(r.client || '—')}</div>
+        <div class="cs-client">${esc(g.client || '—')}</div>
         ${hidden ? '<span class="tag tag-grey">скрыто</span>' : ''}
       </td>
-      <td class="cs-subject">${esc(r.subject || '—')}</td>
-      <td>${advDateStr
-        ? `<span class="cs-date-cell" data-tip="${esc(advTip)}" onmouseenter="showTooltip(this)" onmouseleave="hideTooltip()">${advDateStr}</span>`
-        : '<span class="cs-date-cell cs-date-empty">не указано</span>'}
-      </td>
-      <td>
-        <div class="cs-years-wrap">
-          <input class="cs-years-input" type="number" min="0" step="0.5" value="${r.service_years != null ? esc(String(r.service_years)) : ''}"
-                 onchange="updateServiceYears(${r.id}, this.value)" title="Срок обслуживания, лет">
-          <span class="cb-box ${r.service_confirmed ? 'on' : ''}" onclick="toggleConfirmed(${r.id}, ${!!r.service_confirmed})" title="Подтвердить срок">${r.service_confirmed ? '✓' : ''}</span>
-        </div>
-      </td>
+      <td class="cs-subject">${esc(g.subject || '—')}</td>
+      <td><div class="cs-payments">${payments}</div></td>
+      <td>${yearsCell}</td>
       <td>
         ${endDateStr
           ? `<span class="cs-end-cell">${endDateStr}</span> ${expired ? '<span class="tag tag-red">истёк</span>' : '<span class="tag tag-green">действует</span>'}`
           : '<span class="cs-end-cell cs-end-empty">—</span>'}
       </td>
       <td style="text-align:center">
-        <button class="eye-btn" title="${hidden ? 'Показать' : 'Скрыть'}" onclick="setHidden('${esc(r.shipment_contract)}', ${!hidden})">
+        <button class="eye-btn" title="${hidden ? 'Показать' : 'Скрыть'}" onclick="setHidden('${encodeURIComponent(g.key)}', ${!hidden})">
           ${hidden
             ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
             : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'}
@@ -537,8 +549,8 @@ function renderTable() {
     <table class="reg-table">
       <thead><tr>
         <th style="width:18%">Клиент</th>
-        <th style="width:32%">Предмет договора</th>
-        <th style="width:12%">Оплата аванса</th>
+        <th style="width:30%">Предмет договора</th>
+        <th style="width:14%">Оплата</th>
         <th style="width:16%">Время обслуживания</th>
         <th style="width:16%">Окончание обслуживания</th>
         <th style="width:6%"></th>
@@ -551,6 +563,10 @@ function renderTable() {
    ПОДСКАЗКИ / УТИЛИТЫ
 ═══════════════════════════════════ */
 function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+function pencilSvg() { return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>'; }
+function checkSvg() { return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>'; }
+function xSvg() { return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>'; }
 
 function showTooltip(el) {
   const t = document.getElementById('gTooltip');
