@@ -59,7 +59,8 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .reg-empty{padding:20px;text-align:center;color:var(--tx3);font-size:12px}
 
 .cs-client{font-weight:600;color:var(--tx)}
-.cs-subject{color:var(--tx2);font-size:11.5px;line-height:1.5}
+.cs-group{color:var(--tx3);font-size:11px;line-height:1.5}
+.cs-doc{color:var(--tx2);font-family:var(--mono);font-size:11px;line-height:1.6}
 .cs-date-cell{font-family:var(--mono);font-size:11.5px;color:var(--tx);cursor:help;border-bottom:1px dashed var(--brd2)}
 .cs-date-empty{color:var(--tx3);font-style:italic;border-bottom:none;cursor:default}
 
@@ -124,7 +125,7 @@ tr.cs-row-hidden td{background:var(--surf2)}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.3.0</footer>
+<footer class="ver-footer">v0.4.0</footer>
 <div id="gTooltip"></div>
 
 <script>
@@ -344,7 +345,7 @@ async function saveEditYears(id) {
 
 /* ═══════════════════════════════════
    ГРУППИРОВКА ДЛЯ ОТОБРАЖЕНИЯ: повторные договоры одного клиента с тем же
-   набором документов (subject) схлопываются в одну строку виджета — их
+   набором документов (doc_filtered) схлопываются в одну строку виджета — их
    оплаты показываются несколькими значениями в столбце «Оплата». Срок
    обслуживания/дата окончания берутся из самого свежего договора группы
    (primary), он же редактируется через окно правки.
@@ -352,14 +353,21 @@ async function saveEditYears(id) {
 function groupRecordsForDisplay(rows) {
   const map = new Map();
   rows.forEach(r => {
-    const key = `${r.client || ''}␟${r.subject || ''}`;
+    const key = `${r.client || ''}␟${r.doc_filtered || ''}`;
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(r);
   });
   return Array.from(map.entries()).map(([key, contracts]) => {
     contracts.sort((a, b) => (b.advance_date || 0) - (a.advance_date || 0) ||
       (b.invoice_date || 0) - (a.invoice_date || 0) || b.id - a.id);
-    return { key, client: contracts[0].client, subject: contracts[0].subject, primary: contracts[0], contracts };
+    return {
+      key,
+      client: contracts[0].client,
+      group: contracts[0].group,
+      doc_filtered: contracts[0].doc_filtered,
+      primary: contracts[0],
+      contracts
+    };
   });
 }
 
@@ -375,13 +383,14 @@ function renderTable() {
   if (filter) {
     rows = rows.filter(r =>
       String(r.client || '').toLowerCase().includes(filter) ||
-      String(r.subject || '').toLowerCase().includes(filter));
+      String(r.group || '').toLowerCase().includes(filter) ||
+      String(r.doc_filtered || '').toLowerCase().includes(filter));
   }
 
   let groups = groupRecordsForDisplay(rows);
   groups = groups.filter(g => S.showHidden || !isHidden(g.key));
   groups.sort((a, b) => String(a.client || '').localeCompare(String(b.client || ''), 'ru') ||
-    String(a.subject || '').localeCompare(String(b.subject || ''), 'ru'));
+    String(a.doc_filtered || '').localeCompare(String(b.doc_filtered || ''), 'ru'));
 
   if (!groups.length) {
     container.innerHTML = '<div class="reg-empty">Нет данных. Договоры подтягиваются автоматически из Tu_accounting.</div>';
@@ -422,7 +431,8 @@ function renderTable() {
         <div class="cs-client">${esc(g.client || '—')}</div>
         ${hidden ? '<span class="tag tag-grey">скрыто</span>' : ''}
       </td>
-      <td class="cs-subject">${esc(g.subject || '—')}</td>
+      <td class="cs-group">${esc(g.group || '—')}</td>
+      <td class="cs-doc">${esc(g.doc_filtered || '—')}</td>
       <td><div class="cs-payments">${payments}</div></td>
       <td>${yearsCell}</td>
       <td>
@@ -443,11 +453,12 @@ function renderTable() {
   container.innerHTML = `
     <table class="reg-table">
       <thead><tr>
-        <th style="width:18%">Клиент</th>
-        <th style="width:30%">Предмет договора</th>
+        <th style="width:16%">Клиент</th>
+        <th style="width:12%">Группа</th>
+        <th style="width:24%">Документ</th>
         <th style="width:14%">Оплата</th>
-        <th style="width:16%">Время обслуживания</th>
-        <th style="width:16%">Окончание обслуживания</th>
+        <th style="width:14%">Время обслуживания</th>
+        <th style="width:14%">Окончание обслуживания</th>
         <th style="width:6%"></th>
       </tr></thead>
       <tbody>${body}</tbody>
