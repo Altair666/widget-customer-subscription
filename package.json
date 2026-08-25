@@ -2,7 +2,7 @@
   "name": "@altair666/widget-customer-subscription",
   "description": "Абонентское обслуживание клиентов — учёт договоров и сроков подписки",
   "homePage": "https://github.com/Altair666/widget-customer-subscription",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "grist": {
     "name": "Customer Subscription",
     "url": "https://altair666.github.io/widget-customer-subscription/index.html",

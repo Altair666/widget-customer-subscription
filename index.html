@@ -124,7 +124,7 @@ tr.cs-row-hidden td{background:var(--surf2)}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.2.0</footer>
+<footer class="ver-footer">v0.3.0</footer>
 <div id="gTooltip"></div>
 
 <script>
@@ -171,7 +171,15 @@ const DOC_CODES_BY_LEN = DOC_TYPES.map(d => d.code).filter(Boolean)
 
 const CS_TABLE = 'Customer_subscription';
 const SRC_TABLE = 'Tu_accounting';
+const LINK_COL = 'tu_accounting_refs'; // Ref List: Customer_subscription -> Tu_accounting (только читаем Tu_accounting, никогда не пишем)
 const DEFAULT_OPTIONS = { hiddenKeys: {} };
+
+// Grist кодирует значение колонки Ref List как ['L', id1, id2, ...]
+function refListIds(v) { return Array.isArray(v) && v[0] === 'L' ? v.slice(1) : []; }
+function sameIdSet(a, b) {
+  const sa = a.slice().sort((x, y) => x - y), sb = b.slice().sort((x, y) => x - y);
+  return sa.length === sb.length && sa.every((v, i) => v === sb[i]);
+}
 
 const S = {
   records: [],        // строки Customer_subscription (текущий вид)
@@ -243,7 +251,7 @@ function computeGroupsFromSource(rows) {
     const key = String(r.order_text || '').trim();
     if (!key) return;
     if (!groups.has(key)) {
-      groups.set(key, { key, client: '', mainDoc: '', invoiceDateText: '', advanceText: '', docs: [] });
+      groups.set(key, { key, client: '', mainDoc: '', invoiceDateText: '', advanceText: '', docs: [], tuIds: [] });
     }
     const g = groups.get(key);
     if (!g.client && r.client_text) g.client = String(r.client_text).trim();
@@ -252,6 +260,9 @@ function computeGroupsFromSource(rows) {
     if (!g.advanceText && r.advance_payment_text) g.advanceText = String(r.advance_payment_text).trim();
     const docKey = String(r.doc_text || r.order_description_text || '').trim();
     if (docKey && !g.docs.includes(docKey)) g.docs.push(docKey);
+    // строка Tu_accounting, участвующая в этом договоре — только читаем её id,
+    // саму таблицу Tu_accounting нигде не изменяем (она подключена к вебхукам)
+    if (r.id != null) g.tuIds.push(r.id);
   });
   return Array.from(groups.values())
     .filter(g => g.client)
@@ -272,6 +283,7 @@ function computeGroupsFromSource(rows) {
         invoice_date: extractRuDate(g.invoiceDateText),
         advance_date: extractRuDate(g.advanceText),
         subject,
+        tuIds: g.tuIds,
       };
     });
 }
@@ -292,6 +304,7 @@ function computeSyncPlan() {
       main_doc: g.main_doc,
       invoice_date: jsDateToGrist(g.invoice_date),
       advance_date: jsDateToGrist(g.advance_date),
+      [LINK_COL]: ['L', ...g.tuIds],
     };
     const existing = byKey.get(g.shipment_contract);
     if (!existing) {
@@ -303,6 +316,7 @@ function computeSyncPlan() {
       });
       if ((existing.invoice_date || null) !== fields.invoice_date) changed.invoice_date = fields.invoice_date;
       if ((existing.advance_date || null) !== fields.advance_date) changed.advance_date = fields.advance_date;
+      if (!sameIdSet(refListIds(existing[LINK_COL]), g.tuIds)) changed[LINK_COL] = fields[LINK_COL];
       if (Object.keys(changed).length) updates.push({ id: existing.id, fields: changed, group: g });
     }
   });
@@ -330,6 +344,20 @@ async function autoSync() {
   }
 }
 
+// Добавляет колонку-ссылку tu_accounting_refs в Customer_subscription, если её ещё нет.
+// Действие targeted ТОЛЬКО на CS_TABLE (Customer_subscription) — Tu_accounting не трогаем никогда.
+async function ensureLinkColumn() {
+  try {
+    const rows = await grist.docApi.fetchTable(CS_TABLE);
+    if (rows && Object.prototype.hasOwnProperty.call(rows, LINK_COL)) return;
+    await grist.docApi.applyUserActions([
+      ['AddColumn', CS_TABLE, LINK_COL, { label: 'Источник (Tu_accounting)', type: `RefList:${SRC_TABLE}` }]
+    ]);
+  } catch (e) {
+    console.error('Не удалось создать колонку связи tu_accounting_refs:', e);
+  }
+}
+
 /* ═══════════════════════════════════
    GRIST
 ═══════════════════════════════════ */
@@ -349,7 +377,7 @@ function initGrist() {
   // Customer_subscription — таблица виджета, об изменениях в ней Grist сообщает напрямую
   grist.onRecords(() => { if (firstLoadDone) loadRecords(); });
 
-  Promise.all([loadRecords(), loadSource()]).then(async () => {
+  ensureLinkColumn().then(() => Promise.all([loadRecords(), loadSource()])).then(async () => {
     firstLoadDone = true;
     await autoSync();
     // Tu_accounting — сторонняя таблица, onRecords по ней не приходит,
