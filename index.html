@@ -124,54 +124,23 @@ tr.cs-row-hidden td{background:var(--surf2)}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.2.0</footer>
+<footer class="ver-footer">v0.3.0</footer>
 <div id="gTooltip"></div>
 
 <script>
-/* ═══════════════════════════════════
-   ГОСТ 2.102 — коды основных конструкторских документов
-   (справочник переиспользован из widget-inventory-book)
-═══════════════════════════════════ */
-const DOC_TYPES = [
-  { code: '', label: 'ЧД', fullName: 'Чертёж детали' },
-  { code: '', label: 'СП', fullName: 'Спецификация' },
-  { code: 'СБ', label: 'СБ', fullName: 'Сборочный чертёж' },
-  { code: 'ПЭ3', label: 'ПЭ3', fullName: 'Перечень элементов' },
-  { code: 'ГЧ', label: 'ГЧ', fullName: 'Габаритный чертёж' },
-  { code: 'ЛУ', label: 'ЛУ', fullName: 'Лист утверждения' },
-  { code: 'Э1', label: 'Э1', fullName: 'Схема электрическая структурная' },
-  { code: 'Э2', label: 'Э2', fullName: 'Схема функциональная' },
-  { code: 'Э3', label: 'Э3', fullName: 'Схема электрическая принципиальная' },
-  { code: 'Э4', label: 'Э4', fullName: 'Схема соединений' },
-  { code: 'Э5', label: 'Э5', fullName: 'Схема подключения' },
-  { code: 'ВС', label: 'ВС', fullName: 'Ведомость спецификаций' },
-  { code: 'ВП', label: 'ВП', fullName: 'Ведомость покупных изделий' },
-  { code: 'ТУ', label: 'ТУ', fullName: 'Технические условия' },
-  { code: 'РЭ', label: 'РЭ', fullName: 'Руководство по эксплуатации' },
-  { code: 'ПС', label: 'ПС', fullName: 'Паспорт' },
-  { code: 'ЭТ', label: 'ЭТ', fullName: 'Этикетка' },
-  { code: 'ВЭ', label: 'ВЭ', fullName: 'Ведомость эксплуатационных документов' },
-  { code: 'ВДЭ', label: 'ВДЭ', fullName: 'Ведомость электронных документов' },
-  { code: 'УД', label: 'УД', fullName: 'Удостоверяющий лист' },
-  { code: 'Е1', label: 'Е1', fullName: 'Схема деления структурная' },
-  { code: 'РР1', label: 'РР1', fullName: 'Расчёт надёжности' },
-  { code: 'РР2', label: 'РР2', fullName: 'Расчёт содержания драгоценных материалов' },
-  { code: 'РР3', label: 'РР3', fullName: 'Расчёт показателей уровня стандартизации и унификации' },
-  { code: 'Д', label: 'Д', fullName: 'Данные конструкции' },
-  { code: 'Д1', label: 'Д1', fullName: 'Ведомость документов' },
-  { code: 'Д2', label: 'Д2', fullName: 'Протокол информационного взаимодействия по CAN-интерфейсу' },
-  { code: 'Д3', label: 'Д3', fullName: 'Справочный чертёж' },
-  { code: 'Д4', label: 'Д4', fullName: 'Комплект карт для оценки правильности применения электрорадиоизделий' },
-  { code: 'ИС', label: 'ИС', fullName: 'Инструкция по эксплуатации' },
-];
-// коды документов, отсортированные по убыванию длины — чтобы «РР1» не проглатывалось как «Р»
-const DOC_CODES_BY_LEN = DOC_TYPES.map(d => d.code).filter(Boolean)
-  .filter((v, i, a) => a.indexOf(v) === i)
-  .sort((a, b) => b.length - a.length);
-
 const CS_TABLE = 'Customer_subscription';
 const SRC_TABLE = 'Tu_accounting';
+// client/subject/main_doc/invoice_date/advance_date в Customer_subscription — formula-колонки
+// на стороне Grist, вычисляются из tu_accounting_refs; виджет их больше не заполняет.
+const LINK_COL = 'tu_accounting_refs';
 const DEFAULT_OPTIONS = { hiddenKeys: {} };
+
+// Grist кодирует значение колонки Ref List как ['L', id1, id2, ...]
+function refListIds(v) { return Array.isArray(v) && v[0] === 'L' ? v.slice(1) : []; }
+function sameIdSet(a, b) {
+  const sa = a.slice().sort((x, y) => x - y), sb = b.slice().sort((x, y) => x - y);
+  return sa.length === sb.length && sa.every((v, i) => v === sb[i]);
+}
 
 const S = {
   records: [],        // строки Customer_subscription (текущий вид)
@@ -186,45 +155,6 @@ let syncing = false;
 let editingYearsId = null;
 const AUTO_SYNC_INTERVAL_MS = 20000;
 
-/* ═══════════════════════════════════
-   ПАРСИНГ ТЕКСТА ИЗ Tu_accounting
-═══════════════════════════════════ */
-
-// "ГКВ-1 ОЕМ ЛМАП.402131.046ТУ" -> {product:"ГКВ-1 ОЕМ", designation:"ЛМАП.402131.046", docCode:"ТУ", docLabel:"ТУ (Технические условия)"}
-function parseDocText(raw) {
-  const s = String(raw || '').trim();
-  if (!s) return null;
-  const m = s.match(/^(.*?)([A-ZА-ЯЁ]{2,6}\.\d{5,6}\.\d{3}(?:-\d{1,3})?)([A-ZА-ЯЁ0-9]*)$/);
-  if (!m) {
-    // децимальный номер не распознан — возвращаем текст как есть
-    return { product: s, designation: '', docCode: '', docLabel: '' };
-  }
-  const product = m[1].trim();
-  const designation = m[2];
-  let suffix = m[3].trim();
-  let docCode = '', rest = suffix;
-  // ищем самый длинный известный код документа в конце суффикса
-  for (const code of DOC_CODES_BY_LEN) {
-    if (suffix === code) { docCode = code; rest = ''; break; }
-  }
-  const found = DOC_TYPES.find(d => d.code === docCode);
-  const docLabel = docCode
-    ? (found ? `${docCode} (${found.fullName})` : docCode)
-    : (suffix ? suffix : 'осн. документ');
-  return { product, designation, docCode, docLabel };
-}
-
-// извлекает первую дату вида ДД.ММ.ГГГГ из произвольного текста
-function extractRuDate(text) {
-  const m = String(text || '').match(/(\d{2})\.(\d{2})\.(\d{4})/);
-  if (!m) return null;
-  const dd = +m[1], mm = +m[2], yyyy = +m[3];
-  const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-  if (isNaN(d.getTime()) || d.getUTCDate() !== dd) return null;
-  return d;
-}
-
-function jsDateToGrist(d) { return d ? Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000) : null; }
 function gristToJsDate(v) { return (v === null || v === undefined) ? null : new Date(v * 1000); }
 function fmtDate(v) {
   const d = typeof v === 'number' ? gristToJsDate(v) : v;
@@ -236,83 +166,48 @@ function fmtDate(v) {
    ГРУППИРОВКА Tu_accounting -> строки подписки
    ключ группы = договор отгрузки (order_text): новый договор той же
    фирмы с другой документацией всегда даёт отдельную строку.
+   client/subject/main_doc/invoice_date/advance_date — formula-колонки в
+   Grist, вычисляются из tu_accounting_refs на стороне документа; здесь
+   собираем только ключ группы и id исходных строк для связи.
 ═══════════════════════════════════ */
 function computeGroupsFromSource(rows) {
   const groups = new Map();
   rows.forEach(r => {
     const key = String(r.order_text || '').trim();
     if (!key) return;
-    if (!groups.has(key)) {
-      groups.set(key, { key, client: '', mainDoc: '', invoiceDateText: '', advanceText: '', docs: [] });
-    }
+    if (!groups.has(key)) groups.set(key, { key, hasClient: false, tuIds: [] });
     const g = groups.get(key);
-    if (!g.client && r.client_text) g.client = String(r.client_text).trim();
-    if (!g.mainDoc && r.main_doc_text) g.mainDoc = String(r.main_doc_text).trim();
-    if (!g.invoiceDateText && r.invoice_date_text) g.invoiceDateText = String(r.invoice_date_text).trim();
-    if (!g.advanceText && r.advance_payment_text) g.advanceText = String(r.advance_payment_text).trim();
-    const docKey = String(r.doc_text || r.order_description_text || '').trim();
-    if (docKey && !g.docs.includes(docKey)) g.docs.push(docKey);
+    if (r.client_text) g.hasClient = true;
+    if (r.id != null) g.tuIds.push(r.id);
   });
   return Array.from(groups.values())
-    .filter(g => g.client)
-    .map(g => {
-      // сортируем набор документов до сборки текста предмета договора, чтобы
-      // одинаковый набор документов давал одинаковый subject независимо от
-      // порядка строк в Tu_accounting — это ключ для слияния повторных
-      // договоров с тем же набором документации в одну строку виджета
-      const sortedDocs = g.docs.slice().sort((a, b) => a.localeCompare(b, 'ru'));
-      const parsed = sortedDocs.map(parseDocText).filter(Boolean);
-      const subject = parsed.length
-        ? parsed.map(p => p.docCode || p.docLabel ? `${p.product} — ${p.docLabel}` : p.product).join('; ')
-        : '';
-      return {
-        shipment_contract: g.key,
-        client: g.client,
-        main_doc: g.mainDoc,
-        invoice_date: extractRuDate(g.invoiceDateText),
-        advance_date: extractRuDate(g.advanceText),
-        subject,
-      };
-    });
+    .filter(g => g.hasClient)
+    .map(g => ({ shipment_contract: g.key, tuIds: g.tuIds }));
 }
 
 /* ═══════════════════════════════════
-   ПЛАН СИНХРОНИЗАЦИИ (create/update) — только служебные поля,
-   service_years/service_confirmed никогда не трогаем автосинком.
+   ПЛАН СИНХРОНИЗАЦИИ (create/update) — только shipment_contract и связь
+   tu_accounting_refs; service_years/service_confirmed и formula-поля
+   (client/subject/main_doc/invoice_date/advance_date) автосинк не трогает.
 ═══════════════════════════════════ */
 function computeSyncPlan() {
   const groups = computeGroupsFromSource(S.sourceRows);
   const byKey = new Map(S.records.map(r => [String(r.shipment_contract || '').trim(), r]));
   const creates = [], updates = [];
   groups.forEach(g => {
-    const fields = {
-      client: g.client,
-      subject: g.subject,
-      shipment_contract: g.shipment_contract,
-      main_doc: g.main_doc,
-      invoice_date: jsDateToGrist(g.invoice_date),
-      advance_date: jsDateToGrist(g.advance_date),
-    };
+    const refs = ['L', ...g.tuIds];
     const existing = byKey.get(g.shipment_contract);
     if (!existing) {
-      creates.push({ fields, group: g });
-    } else {
-      const changed = {};
-      ['client', 'subject', 'main_doc'].forEach(k => {
-        if (String(existing[k] || '') !== String(fields[k] || '')) changed[k] = fields[k];
-      });
-      if ((existing.invoice_date || null) !== fields.invoice_date) changed.invoice_date = fields.invoice_date;
-      if ((existing.advance_date || null) !== fields.advance_date) changed.advance_date = fields.advance_date;
-      if (Object.keys(changed).length) updates.push({ id: existing.id, fields: changed, group: g });
+      creates.push({ fields: { shipment_contract: g.shipment_contract, [LINK_COL]: refs } });
+    } else if (!sameIdSet(refListIds(existing[LINK_COL]), g.tuIds)) {
+      updates.push({ id: existing.id, fields: { [LINK_COL]: refs } });
     }
   });
   return { creates, updates };
 }
 
 // применяется автоматически при любом изменении Tu_accounting/Customer_subscription —
-// без диалога подтверждения, по явному запросу пользователя (обычный человекочитаемый
-// список создаётся/обновляется только служебными полями, service_years/service_confirmed
-// синк никогда не трогает)
+// без диалога подтверждения, по явному запросу пользователя
 async function autoSync() {
   if (syncing || typeof grist === 'undefined') return;
   syncing = true;
