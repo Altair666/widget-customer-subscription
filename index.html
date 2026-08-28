@@ -90,6 +90,10 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 tr.cs-row-expired td{opacity:.5}
 tr.cs-row-expired .cs-client{color:var(--tx2)}
 tr.cs-row-hidden td{background:var(--surf2)}
+tr.cs-row-active td:first-child{box-shadow:inset 3px 0 0 var(--grn)}
+
+.cs-more-btn{display:inline-flex;align-items:center;height:auto;width:auto;padding:2px 6px;font-size:10px;margin-top:2px}
+.cs-doc-list{line-height:1.6}
 
 #gTooltip{position:fixed;background:var(--tx);color:#fff;padding:6px 10px;border-radius:var(--r);font-size:11px;font-weight:400;white-space:pre;z-index:9999;pointer-events:none;display:none;box-shadow:0 4px 12px rgba(0,0,0,.15);line-height:1.4}
 
@@ -125,16 +129,19 @@ tr.cs-row-hidden td{background:var(--surf2)}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.4.0</footer>
+<footer class="ver-footer">v0.5.0</footer>
 <div id="gTooltip"></div>
 
 <script>
 const CS_TABLE = 'Customer_subscription';
 const SRC_TABLE = 'Tu_accounting';
+const INV_TABLE = 'Inventory_book';
+const NOTICE_TABLE = 'Notice_of_change';
 // client/subject/main_doc/invoice_date/advance_date в Customer_subscription — formula-колонки
 // на стороне Grist, вычисляются из tu_accounting_refs; виджет их больше не заполняет.
 const LINK_COL = 'tu_accounting_refs';
 const DEFAULT_OPTIONS = { hiddenKeys: {} };
+const KD_LIST_LIMIT = 5;
 
 // Grist кодирует значение колонки Ref List как ['L', id1, id2, ...]
 function refListIds(v) { return Array.isArray(v) && v[0] === 'L' ? v.slice(1) : []; }
@@ -146,9 +153,12 @@ function sameIdSet(a, b) {
 const S = {
   records: [],        // строки Customer_subscription (текущий вид)
   sourceRows: [],      // строки Tu_accounting
+  inventory: [],        // строки Inventory_book (только чтение)
+  notices: [],           // строки Notice_of_change (только чтение)
   options: { ...DEFAULT_OPTIONS },
-  hiddenKeys: {},       // ключ группы (клиент+предмет договора) -> true
+  hiddenKeys: {},       // ключ группы (клиент+предмет договора) -> { ids: [...] } снимок id договоров на момент скрытия
   showHidden: false,
+  lastGroups: new Map(), // ключ группы -> актуальная группа (для setHidden/автопоказа)
 };
 
 let firstLoadDone = false;
@@ -239,18 +249,22 @@ function initGrist() {
   setConn(true, 'Загрузка…');
   grist.onOptions((options) => {
     S.options = Object.assign({}, DEFAULT_OPTIONS, options || {});
-    S.hiddenKeys = S.options.hiddenKeys || {};
+    S.hiddenKeys = normalizeHiddenKeys(S.options.hiddenKeys);
     renderTable();
   });
   // Customer_subscription — таблица виджета, об изменениях в ней Grist сообщает напрямую
   grist.onRecords(() => { if (firstLoadDone) loadRecords(); });
 
-  Promise.all([loadRecords(), loadSource()]).then(async () => {
+  Promise.all([loadRecords(), loadSource(), loadInventory(), loadNotices()]).then(async () => {
     firstLoadDone = true;
     await autoSync();
-    // Tu_accounting — сторонняя таблица, onRecords по ней не приходит,
-    // поэтому опрашиваем её периодически и досинхронизируем автоматически
-    setInterval(async () => { await loadSource(); await autoSync(); }, AUTO_SYNC_INTERVAL_MS);
+    // Tu_accounting/Inventory_book/Notice_of_change — сторонние таблицы, onRecords по ним
+    // не приходит, поэтому опрашиваем их периодически и досинхронизируем автоматически
+    setInterval(async () => {
+      await Promise.all([loadSource(), loadInventory(), loadNotices()]);
+      await autoSync();
+      renderTable();
+    }, AUTO_SYNC_INTERVAL_MS);
   });
 }
 
@@ -278,6 +292,30 @@ async function loadSource() {
   }
 }
 
+// Inventory_book / Notice_of_change — сторонние таблицы, только чтение,
+// используются для индикатора новых документов и раскрытия "КД" (требования 1 и 5)
+async function loadInventory() {
+  if (typeof grist === 'undefined') return;
+  try {
+    const rows = await grist.docApi.fetchTable(INV_TABLE);
+    S.inventory = rowsToRecords(rows);
+  } catch (e) {
+    console.warn(`${INV_TABLE} недоступна:`, e.message);
+    S.inventory = [];
+  }
+}
+
+async function loadNotices() {
+  if (typeof grist === 'undefined') return;
+  try {
+    const rows = await grist.docApi.fetchTable(NOTICE_TABLE);
+    S.notices = rowsToRecords(rows);
+  } catch (e) {
+    console.warn(`${NOTICE_TABLE} недоступна:`, e.message);
+    S.notices = [];
+  }
+}
+
 function rowsToRecords(rows) {
   if (!rows || !rows.id) return [];
   return rows.id.map((id, i) => {
@@ -294,13 +332,42 @@ function setConn(ok, lbl) {
 
 /* ═══════════════════════════════════
    HIDE / SHOW (состояние — в опциях виджета, как в notification_numbers)
+   Скрытие хранит снимок id договоров группы на момент скрытия ({ids:[...]}).
+   Если у группы появляется договор с id вне снимка (новый договор клиента),
+   группа автоматически возвращается — см. autoUnhideNewContracts() в renderTable.
 ═══════════════════════════════════ */
+function normalizeHiddenKeys(raw) {
+  const out = {};
+  Object.keys(raw || {}).forEach(k => {
+    const v = raw[k];
+    if (v === true) out[k] = { ids: null }; // старый формат (до миграции) — снимок неизвестен
+    else if (v && typeof v === 'object') out[k] = { ids: Array.isArray(v.ids) ? v.ids : null };
+  });
+  return out;
+}
 function isHidden(key) { return !!S.hiddenKeys[String(key)]; }
 function setHidden(encodedKey, hidden) {
   const k = decodeURIComponent(encodedKey);
-  if (hidden) S.hiddenKeys[k] = true; else delete S.hiddenKeys[k];
+  if (hidden) {
+    const g = S.lastGroups.get(k);
+    S.hiddenKeys[k] = { ids: g ? g.contracts.map(c => c.id) : null };
+  } else {
+    delete S.hiddenKeys[k];
+  }
   grist.setOption('hiddenKeys', S.hiddenKeys);
   renderTable();
+}
+// вызывается перед фильтрацией скрытых строк: если у скрытой группы появился
+// договор, которого не было в снимке на момент скрытия — скрытие снимается
+function autoUnhideNewContracts(groups) {
+  let changed = false;
+  groups.forEach(g => {
+    const h = S.hiddenKeys[g.key];
+    if (!h || !Array.isArray(h.ids)) return;
+    const hasNew = g.contracts.some(c => !h.ids.includes(c.id));
+    if (hasNew) { delete S.hiddenKeys[g.key]; changed = true; }
+  });
+  if (changed && typeof grist !== 'undefined') grist.setOption('hiddenKeys', S.hiddenKeys);
 }
 function toggleShowHidden() {
   S.showHidden = !S.showHidden;
@@ -372,6 +439,83 @@ function groupRecordsForDisplay(rows) {
 }
 
 /* ═══════════════════════════════════
+   СВЯЗЬ С ИНВЕНТАРНОЙ КНИГОЙ / ИЗВЕЩЕНИЯМИ (только чтение)
+   Децимальный номер извлекается из текста тем же способом, что и в формуле
+   doc_filtered на стороне Grist: префикс вида "ЛМАП.402131.009" перед кодом
+   документа/суффиксом. Используется для (1) индикатора новых документов и
+   (5) раскрытия списка документов, когда doc_filtered = "КД".
+═══════════════════════════════════ */
+const DECIMAL_NUMBER_RE = /[А-ЯЁ]+\.\d+\.\d+/g;
+function extractDecimalNumbers(text) {
+  return Array.from(new Set(String(text || '').match(DECIMAL_NUMBER_RE) || []));
+}
+
+// находит записи Notice_of_change, чьё изделие (ProductName) соответствует
+// группе виджета (поле group может содержать несколько изделий через "; ")
+function noticesForGroup(g) {
+  const names = String(g.group || '').split(/;\s*/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (!names.length) return [];
+  return S.notices.filter(n => {
+    const pname = String(n.ProductName || '').trim().toLowerCase();
+    if (!pname) return false;
+    return names.some(nm => nm.includes(pname) || pname.includes(nm));
+  });
+}
+
+// децимальные номера изделия группы: сперва пробуем взять их прямо из
+// doc_filtered (стандартные обозначения), если пусто — идём через извещения
+// по изделию (fallback для случая doc_filtered = "КД")
+function productDecimalNumbersForGroup(g) {
+  const direct = extractDecimalNumbers(g.doc_filtered);
+  if (direct.length) return direct;
+  const nums = new Set();
+  noticesForGroup(g).forEach(n => extractDecimalNumbers(n.DocumentDesignations).forEach(x => nums.add(x)));
+  return Array.from(nums);
+}
+
+// уникальные обозначения документов изделия группы (для раскрытия "КД"),
+// отсортированы по алфавиту
+function noticeDesignationsForGroup(g) {
+  const map = new Map();
+  noticesForGroup(g).forEach(n => {
+    String(n.DocumentDesignations || '').split(/\s+/).filter(Boolean).forEach(tok => {
+      const [des, cn] = tok.split('#');
+      if (!des) return;
+      const num = cn ? Number(cn) : 0;
+      if (!map.has(des) || map.get(des) < num) map.set(des, num);
+    });
+  });
+  return Array.from(map.keys()).sort((a, b) => a.localeCompare(b, 'ru'));
+}
+
+// требование 1: индикатор "в инвентарную книгу добавлен документ новее аванса".
+// Если действующий (primary) договор группы уже закрыт — по просьбе
+// пользователя ориентир берётся со следующего договора того же клиента с тем
+// же набором документов; но primary в группе всегда самый свежий договор
+// (сортировка), поэтому "следующего" внутри группы структурно не существует —
+// индикатора нет, как и было явно оговорено.
+function hasNewInventoryDoc(g) {
+  const p = g.primary;
+  const closed = p.service_end != null && p.service_end < Math.floor(Date.now() / 1000);
+  if (closed) return false;
+  if (p.advance_date == null) return false;
+  const nums = productDecimalNumbersForGroup(g);
+  if (!nums.length) return false;
+  return S.inventory.some(row => {
+    const dn = row.Product_dn || row.ProductName_dn || '';
+    return dn && nums.includes(dn) && row.IssueDate != null && row.IssueDate > p.advance_date;
+  });
+}
+
+function toggleKdMore(id, btn, count) {
+  const el = document.getElementById(id + '-more');
+  if (!el) return;
+  const show = el.style.display === 'none';
+  el.style.display = show ? 'block' : 'none';
+  btn.textContent = show ? 'Свернуть' : `Показать полностью (+${count})`;
+}
+
+/* ═══════════════════════════════════
    РЕНДЕР ТАБЛИЦЫ
 ═══════════════════════════════════ */
 function renderTable() {
@@ -388,6 +532,8 @@ function renderTable() {
   }
 
   let groups = groupRecordsForDisplay(rows);
+  S.lastGroups = new Map(groups.map(g => [g.key, g]));
+  autoUnhideNewContracts(groups); // требование 2: новый договор клиента снимает ручное скрытие
   groups = groups.filter(g => S.showHidden || !isHidden(g.key));
   groups.sort((a, b) => String(a.client || '').localeCompare(String(b.client || ''), 'ru') ||
     String(a.doc_filtered || '').localeCompare(String(b.doc_filtered || ''), 'ru'));
@@ -402,7 +548,33 @@ function renderTable() {
     const p = g.primary;
     const expired = p.service_end != null && p.service_end < today;
     const endDateStr = fmtDate(p.service_end);
-    const rowClasses = ['', expired ? 'cs-row-expired' : '', hidden ? 'cs-row-hidden' : ''].filter(Boolean).join(' ');
+    const rowClasses = ['', expired ? 'cs-row-expired' : 'cs-row-active', hidden ? 'cs-row-hidden' : '']
+      .filter(Boolean).join(' ');
+
+    // требование 5: если doc_filtered = "КД" — раскрываем реальный список
+    // документов изделия через Notice_of_change вместо голого "КД"
+    let docCellHtml;
+    if (String(g.doc_filtered || '').trim() === 'КД') {
+      const list = noticeDesignationsForGroup(g);
+      if (list.length) {
+        const shown = list.slice(0, KD_LIST_LIMIT);
+        const rest = list.slice(KD_LIST_LIMIT);
+        const domId = 'kd-' + encodeURIComponent(g.key).replace(/[^a-zA-Z0-9]/g, '');
+        docCellHtml = `<div class="cs-doc-list">${shown.map(esc).join('<br>')}</div>` +
+          (rest.length
+            ? `<div class="cs-doc-list" id="${domId}-more" style="display:none">${rest.map(esc).join('<br>')}</div>
+               <button class="cell-edit-btn cs-more-btn" onclick="toggleKdMore('${domId}', this, ${rest.length})">Показать полностью (+${rest.length})</button>`
+            : '');
+      } else {
+        docCellHtml = esc(g.doc_filtered || '—');
+      }
+    } else {
+      docCellHtml = esc(g.doc_filtered || '—');
+    }
+    // требование 1: индикатор нового документа в инвентарной книге
+    const newDocBadge = hasNewInventoryDoc(g)
+      ? `<span class="tag tag-blue" data-tip="${esc('В инвентарную книгу добавлен документ новее даты аванса')}" onmouseenter="showTooltip(this)" onmouseleave="hideTooltip()">новый документ</span>`
+      : '';
 
     const payments = g.contracts.map(c => {
       const tip = `Договор отгрузки: ${c.shipment_contract || '—'}\nДата счета: ${fmtDate(c.invoice_date) || '—'}\nГлавный документ: ${c.main_doc || '—'}`;
@@ -432,7 +604,7 @@ function renderTable() {
         ${hidden ? '<span class="tag tag-grey">скрыто</span>' : ''}
       </td>
       <td class="cs-group">${esc(g.group || '—')}</td>
-      <td class="cs-doc">${esc(g.doc_filtered || '—')}</td>
+      <td class="cs-doc">${docCellHtml}${newDocBadge ? ' ' + newDocBadge : ''}</td>
       <td><div class="cs-payments">${payments}</div></td>
       <td>${yearsCell}</td>
       <td>
