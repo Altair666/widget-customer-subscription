@@ -28,11 +28,11 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .conn-status{position:fixed;left:10px;bottom:6px;display:flex;align-items:center;gap:6px;font-size:10px;color:var(--tx3);background:var(--surf2);border:1px solid var(--brd);border-radius:4pt;padding:1px 7px;z-index:10}
 .ver-footer{position:fixed;right:10px;bottom:6px;font-family:var(--mono);font-size:10px;color:var(--tx3);background:var(--surf2);border:1px solid var(--brd);border-radius:4pt;padding:1px 7px;z-index:10}
 
-.main{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:0}
+.main{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:0}
 
-.panel{background:var(--surf);border:1px solid var(--brd);border-radius:0;overflow:hidden}
+.panel{background:var(--surf);border:1px solid var(--brd);border-radius:0;overflow:hidden;flex:1;min-height:0;display:flex;flex-direction:column}
 .panel+.panel{border-top:none}
-.ph{display:flex;align-items:center;justify-content:space-between;height:36px;padding:0 12px;border-bottom:1px solid var(--brd);background:var(--surf2);gap:8px}
+.ph{flex-shrink:0;display:flex;align-items:center;justify-content:space-between;height:36px;padding:0 12px;border-bottom:1px solid var(--brd);background:var(--surf2);gap:8px}
 .ph-title{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--tx2)}
 .ph-actions{display:flex;align-items:center;gap:6px}
 .pb{padding:10px 12px}
@@ -45,14 +45,16 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .btn-primary:disabled{opacity:.35}
 .btn.on{border-color:var(--acc);color:var(--acc);background:var(--acc-bg)}
 
-.reg-filter-bar{padding:8px 12px;background:var(--surf2);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px}
+.reg-filter-bar{flex-shrink:0;padding:8px 12px;background:var(--surf2);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px}
 .reg-filter-wrap{position:relative;flex:1}
 .reg-filter-input{width:100%;height:28px;border:1px solid var(--brd);border-radius:var(--r);padding:0 9px 0 28px;font-family:inherit;font-size:12px;background:#fff;outline:none;color:var(--tx)}
 .reg-filter-input:focus{border-color:var(--acc)}
 .reg-filter-icon{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:var(--tx3);pointer-events:none}
 
+#tableBody{flex:1;min-height:0;overflow-y:auto}
+
 .reg-table{width:100%;border-collapse:collapse;font-size:12px}
-.reg-table th{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);padding:6px 8px;border-bottom:2px solid var(--brd);text-align:left;background:var(--surf2);white-space:nowrap}
+.reg-table th{position:sticky;top:0;z-index:2;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);padding:6px 8px;border-bottom:2px solid var(--brd);text-align:left;background:var(--surf2);white-space:nowrap}
 .reg-table td{padding:7px 8px;border-bottom:1px solid var(--brd);vertical-align:middle;text-align:left}
 .reg-table tr:last-child td{border-bottom:none}
 .reg-table tr:hover td{background:var(--surf2)}
@@ -129,7 +131,7 @@ tr.cs-row-active td:first-child{box-shadow:inset 3px 0 0 var(--grn)}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.5.0</footer>
+<footer class="ver-footer">v0.5.1</footer>
 <div id="gTooltip"></div>
 
 <script>
