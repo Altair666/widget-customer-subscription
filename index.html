@@ -73,6 +73,8 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .cell-edit-btn.cancel{color:var(--red)}
 .cell-edit-btn.cancel:hover{background:var(--red-bg);color:var(--red);border-color:var(--red-brd)}
 .cell-edit-input{width:64px;height:26px;border:1px solid var(--acc);border-radius:var(--r);padding:0 6px;font-family:inherit;font-size:12px;color:var(--tx);outline:none;background:var(--surf);text-align:center}
+.cell-edit-unit{height:26px;border:1px solid var(--brd);border-radius:var(--r);padding:0 4px;font-family:inherit;font-size:11px;color:var(--tx);outline:none;background:var(--surf)}
+.cell-edit-btn-wide{width:auto;padding:0 6px;font-size:10px}
 .cell-edit-wrap-inline{display:flex;align-items:center;gap:4px}
 .cs-years-view{display:flex;align-items:center;gap:6px}
 .cs-payments{display:flex;flex-wrap:wrap;gap:4px 8px}
@@ -132,7 +134,7 @@ tr.cs-row-active td:first-child{box-shadow:inset 3px 0 0 var(--grn)}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.5.2</footer>
+<footer class="ver-footer">v0.6.0</footer>
 <div id="gTooltip"></div>
 
 <script>
@@ -400,17 +402,30 @@ function cancelEditYears() {
 
 async function saveEditYears(id) {
   const el = document.getElementById(`yearsInput-${id}`);
+  const unitEl = document.getElementById(`yearsUnit-${id}`);
   const raw = el ? el.value.trim() : '';
   const years = raw === '' ? null : Number(raw);
-  if (raw !== '' && (isNaN(years) || years < 0)) { alert('Введите неотрицательное число лет'); return; }
+  if (raw !== '' && (isNaN(years) || years < 0)) { alert('Введите неотрицательное число'); return; }
+  const unit = unitEl ? unitEl.value : 'years';
   try {
-    await grist.selectedTable.update({ id, fields: { service_years: years, service_confirmed: years !== null } });
+    await grist.selectedTable.update({
+      id,
+      fields: { service_years: years, service_unit: years !== null ? unit : null, service_confirmed: years !== null }
+    });
     editingYearsId = null;
     renderTable();
   } catch (e) {
     console.error('Ошибка сохранения срока обслуживания:', e);
     alert('Не удалось сохранить срок: ' + e.message);
   }
+}
+
+// пресет для разовой покупки/учётной копии — заполняет поля правки, не сохраняет сам
+function presetAccountingCopy(id) {
+  const el = document.getElementById(`yearsInput-${id}`);
+  const unitEl = document.getElementById(`yearsUnit-${id}`);
+  if (el) el.value = '2';
+  if (unitEl) unitEl.value = 'weeks';
 }
 
 /* ═══════════════════════════════════
@@ -591,17 +606,23 @@ function renderTable() {
       return `<span class="cs-date-cell${emptyCls}" data-tip="${esc(tip)}" onmouseenter="showTooltip(this)" onmouseleave="hideTooltip()">${esc(dateStr)}</span>`;
     }).join('');
 
+    const unitLabel = p.service_unit === 'weeks' ? 'нед.' : 'г.';
     const yearsCell = editingYearsId === p.id ? `
         <div class="cell-edit-wrap-inline">
           <input class="cell-edit-input mono" id="yearsInput-${p.id}" type="number" min="0" step="0.5"
-                 value="${p.service_years != null ? esc(String(p.service_years)) : ''}" placeholder="лет" autocomplete="off"
+                 value="${p.service_years != null ? esc(String(p.service_years)) : ''}" placeholder="срок" autocomplete="off"
                  onkeydown="if(event.key==='Enter')saveEditYears(${p.id});if(event.key==='Escape')cancelEditYears();">
+          <select class="cell-edit-unit" id="yearsUnit-${p.id}">
+            <option value="years" ${p.service_unit !== 'weeks' ? 'selected' : ''}>лет</option>
+            <option value="weeks" ${p.service_unit === 'weeks' ? 'selected' : ''}>нед.</option>
+          </select>
           <button class="cell-edit-btn save" onclick="saveEditYears(${p.id})" title="Сохранить">${checkSvg()}</button>
           <button class="cell-edit-btn cancel" onclick="cancelEditYears()" title="Отмена">${xSvg()}</button>
+          <button class="cell-edit-btn cell-edit-btn-wide" onclick="presetAccountingCopy(${p.id})" title="Учётная копия (разовая покупка) — 2 недели">2 нед.</button>
         </div>`
       : `
         <div class="cs-years-view">
-          <span>${p.service_years != null ? esc(String(p.service_years)) + ' г.' : '<span class="cs-date-empty">не задано</span>'}</span>
+          <span>${p.service_years != null ? esc(String(p.service_years)) + ' ' + unitLabel : '<span class="cs-date-empty">не задано</span>'}</span>
           <button class="cell-edit-btn" onclick="startEditYears(${p.id})" title="Изменить срок">${pencilSvg()}</button>
         </div>`;
 
