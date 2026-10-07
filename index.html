@@ -56,8 +56,10 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .reg-table{width:100%;border-collapse:collapse;font-size:12px}
 .reg-table th{position:sticky;top:0;z-index:2;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);padding:6px 8px;border-bottom:2px solid var(--brd);text-align:left;background:var(--surf2);white-space:nowrap}
 .reg-table td{padding:7px 8px;border-bottom:1px solid var(--brd);vertical-align:middle;text-align:left}
+.reg-table td[rowspan]{vertical-align:top;padding-top:9px}
 .reg-table tr:last-child td{border-bottom:none}
 .reg-table tr:hover td{background:var(--surf2)}
+.reg-table tr.cs-client-start td{border-top:2px solid var(--brd2)}
 .reg-empty{padding:20px;text-align:center;color:var(--tx3);font-size:12px}
 
 .cs-client{font-weight:600;color:var(--tx)}
@@ -134,7 +136,7 @@ tr.cs-row-active td:first-child{box-shadow:inset 3px 0 0 var(--grn)}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.6.0</footer>
+<footer class="ver-footer">v0.7.0</footer>
 <div id="gTooltip"></div>
 
 <script>
@@ -533,6 +535,22 @@ function toggleKdMore(id, btn, count) {
   btn.textContent = show ? 'Свернуть' : `Показать полностью (+${count})`;
 }
 
+// для соседних строк (массив уже отсортирован по нужному ключу) возвращает
+// по одному числу на строку: >0 — начало серии одинаковых значений и
+// rowspan для её первой ячейки, -1 — строка внутри серии (ячейку не рендерим)
+function computeRowSpans(items, keyFn) {
+  const spans = new Array(items.length).fill(1);
+  let i = 0;
+  while (i < items.length) {
+    let j = i + 1;
+    while (j < items.length && keyFn(items[j]) === keyFn(items[i])) j++;
+    spans[i] = j - i;
+    for (let k = i + 1; k < j; k++) spans[k] = -1;
+    i = j;
+  }
+  return spans;
+}
+
 /* ═══════════════════════════════════
    РЕНДЕР ТАБЛИЦЫ
 ═══════════════════════════════════ */
@@ -554,6 +572,7 @@ function renderTable() {
   autoUnhideNewContracts(groups); // требование 2: новый договор клиента снимает ручное скрытие
   groups = groups.filter(g => S.showHidden || !isHidden(g.key));
   groups.sort((a, b) => String(a.client || '').localeCompare(String(b.client || ''), 'ru') ||
+    String(a.group || '').localeCompare(String(b.group || ''), 'ru') ||
     String(a.doc_filtered || '').localeCompare(String(b.doc_filtered || ''), 'ru'));
 
   if (!groups.length) {
@@ -561,12 +580,18 @@ function renderTable() {
     return;
   }
 
-  const body = groups.map(g => {
+  // объединение соседних строк с одинаковым клиентом/изделием в одну ячейку
+  // (rowspan) — таблица уже отсортирована по клиенту, затем по группе
+  const clientSpans = computeRowSpans(groups, g => String(g.client || ''));
+  const groupSpans = computeRowSpans(groups, g => `${g.client || ''}␟${g.group || ''}`);
+
+  const body = groups.map((g, i) => {
     const hidden = isHidden(g.key);
     const p = g.primary;
     const expired = p.service_end != null && p.service_end < today;
     const endDateStr = fmtDate(p.service_end);
-    const rowClasses = ['', expired ? 'cs-row-expired' : 'cs-row-active', hidden ? 'cs-row-hidden' : '']
+    const rowClasses = ['', expired ? 'cs-row-expired' : 'cs-row-active', hidden ? 'cs-row-hidden' : '',
+      clientSpans[i] > 0 && i > 0 ? 'cs-client-start' : '']
       .filter(Boolean).join(' ');
 
     // требование 5: если doc_filtered = "КД" — раскрываем реальный список
@@ -626,14 +651,18 @@ function renderTable() {
           <button class="cell-edit-btn" onclick="startEditYears(${p.id})" title="Изменить срок">${pencilSvg()}</button>
         </div>`;
 
+    const clientCell = clientSpans[i] > 0
+      ? `<td${clientSpans[i] > 1 ? ` rowspan="${clientSpans[i]}"` : ''}><div class="cs-client">${esc(g.client || '—')}</div></td>`
+      : '';
+    const groupCell = groupSpans[i] > 0
+      ? `<td class="cs-group"${groupSpans[i] > 1 ? ` rowspan="${groupSpans[i]}"` : ''}>${esc(g.group || '—')}</td>`
+      : '';
+
     return `
     <tr class="${rowClasses}">
-      <td>
-        <div class="cs-client">${esc(g.client || '—')}</div>
-        ${hidden ? '<span class="tag tag-grey">скрыто</span>' : ''}
-      </td>
-      <td class="cs-group">${esc(g.group || '—')}</td>
-      <td class="cs-doc">${docCellHtml}${newDocBadge ? ' ' + newDocBadge : ''}</td>
+      ${clientCell}
+      ${groupCell}
+      <td class="cs-doc">${docCellHtml}${newDocBadge ? ' ' + newDocBadge : ''}${hidden ? ' <span class="tag tag-grey">скрыто</span>' : ''}</td>
       <td><div class="cs-payments">${payments}</div></td>
       <td>${yearsCell}</td>
       <td>
