@@ -92,8 +92,10 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .tag-green{background:var(--grn-bg);color:var(--grn);border:1px solid var(--grn-brd)}
 .tag-red{background:var(--red-bg);color:var(--red);border:1px solid var(--red-brd)}
 .tag-orange{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-brd)}
-.cs-status-dot{padding:1px 4px;cursor:help;margin-left:4px;font-size:9px;line-height:1}
+.cs-status-dot{padding:2px 4px;cursor:help;margin-left:4px;line-height:1}
 .cs-doc-line{display:inline-flex;align-items:center}
+.cs-doc-cell{display:flex;align-items:flex-start;gap:4px}
+.cs-doc-body{flex:1;min-width:0}
 
 .eye-btn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid transparent;border-radius:4pt;background:transparent;color:var(--tx3);cursor:pointer;transition:all .1s;padding:0}
 .eye-btn:hover{background:var(--surf3);color:var(--tx)}
@@ -142,7 +144,7 @@ tr.cs-row-history .cs-end-cell,tr.cs-row-history .cs-date-cell{font-size:11px}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.9.0</footer>
+<footer class="ver-footer">v0.10.0</footer>
 <div id="gTooltip"></div>
 
 <script>
@@ -276,6 +278,12 @@ function initGrist() {
   Promise.all([loadRecords(), loadSource(), loadInventory(), loadNotices(), loadComponents(), loadIod()]).then(async () => {
     firstLoadDone = true;
     await autoSync();
+    // loadRecords() уже вызвал renderTable() сразу по приходу своих данных —
+    // возможно, раньше, чем успели подгрузиться Inventory_book/Notice_of_change/
+    // Components/Inventory_of_Documents. Пересчитываем ещё раз теперь, когда
+    // точно всё загружено, иначе индикаторы «не найдено» (красные) остаются
+    // показанными до следующего события, которое вызовет renderTable().
+    renderTable();
     // Tu_accounting/Inventory_book/Notice_of_change/Components/Inventory_of_Documents —
     // сторонние таблицы, onRecords по ним не приходит, поэтому опрашиваем их периодически
     // и досинхронизируем автоматически
@@ -671,9 +679,12 @@ function firmSentVersions(firm, order, asOf) {
   return { sent };
 }
 
-// требование: лицензия бессрочна — никогда не считается истёкшей по service_end
+// требование: лицензия бессрочна — никогда не считается истёкшей по service_end.
+// заказ без аванса (счёт не оплачен) считается просроченным/истёкшим — поставка
+// документов по нему не нужна, пока оплата не пришла.
 function isContractExpired(rec, today) {
   if ((rec.contract_type || '') === 'лицензия') return false;
+  if (rec.advance_date == null) return true;
   return rec.service_end != null && rec.service_end < today;
 }
 
@@ -739,7 +750,7 @@ function orderIndicators(order) {
 
 function statusDot(color, tip) {
   const cls = { green: 'tag-green', blue: 'tag-blue', orange: 'tag-orange', red: 'tag-red' }[color] || 'tag-grey';
-  return `<span class="tag ${cls} cs-status-dot" data-tip="${esc(tip)}" onmouseenter="showTooltip(this)" onmouseleave="hideTooltip()">●</span>`;
+  return `<span class="tag ${cls} cs-status-dot" data-tip="${esc(tip)}" onmouseenter="showTooltip(this)" onmouseleave="hideTooltip()">${statusDocSvg()}</span>`;
 }
 
 function toggleKdMore(id, btn, count) {
@@ -932,7 +943,7 @@ function renderTable() {
     <tr class="${rowClasses}">
       ${clientCell}
       ${groupCell}
-      <td class="cs-doc">${expandBtn}${docCellHtml}${rowBadge ? ' ' + rowBadge : ''}${hidden ? ' <span class="tag tag-grey">скрыто</span>' : ''}</td>
+      <td class="cs-doc"><div class="cs-doc-cell">${expandBtn}<div class="cs-doc-body">${docCellHtml}${rowBadge ? ' ' + rowBadge : ''}${hidden ? ' <span class="tag tag-grey">скрыто</span>' : ''}</div></div></td>
       <td><div class="cs-payments">${payments}</div></td>
       <td>${yearsCell}</td>
       <td>
@@ -973,6 +984,7 @@ function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&
 function pencilSvg() { return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>'; }
 function checkSvg() { return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>'; }
 function xSvg() { return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>'; }
+function statusDocSvg() { return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>'; }
 function chevronSvg(open) {
   return open
     ? '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>'
