@@ -91,7 +91,9 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .tag-grey{background:var(--surf3);color:var(--tx3)}
 .tag-green{background:var(--grn-bg);color:var(--grn);border:1px solid var(--grn-brd)}
 .tag-red{background:var(--red-bg);color:var(--red);border:1px solid var(--red-brd)}
-.cs-newdoc-badge{padding:3px 4px;cursor:help}
+.tag-orange{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-brd)}
+.cs-status-dot{padding:1px 4px;cursor:help;margin-left:4px;font-size:9px;line-height:1}
+.cs-doc-line{display:inline-flex;align-items:center}
 
 .eye-btn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid transparent;border-radius:4pt;background:transparent;color:var(--tx3);cursor:pointer;transition:all .1s;padding:0}
 .eye-btn:hover{background:var(--surf3);color:var(--tx)}
@@ -140,7 +142,7 @@ tr.cs-row-history .cs-end-cell,tr.cs-row-history .cs-date-cell{font-size:11px}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.8.0</footer>
+<footer class="ver-footer">v0.9.0</footer>
 <div id="gTooltip"></div>
 
 <script>
@@ -148,6 +150,8 @@ const CS_TABLE = 'Customer_subscription';
 const SRC_TABLE = 'Tu_accounting';
 const INV_TABLE = 'Inventory_book';
 const NOTICE_TABLE = 'Notice_of_change';
+const COMPONENTS_TABLE = 'Components';
+const IOD_TABLE = 'Inventory_of_Documents';
 // client/subject/main_doc/invoice_date/advance_date в Customer_subscription — formula-колонки
 // на стороне Grist, вычисляются из tu_accounting_refs; виджет их больше не заполняет.
 const LINK_COL = 'tu_accounting_refs';
@@ -166,6 +170,8 @@ const S = {
   sourceRows: [],      // строки Tu_accounting
   inventory: [],        // строки Inventory_book (только чтение)
   notices: [],           // строки Notice_of_change (только чтение)
+  components: [],        // строки Components (только чтение)
+  iod: [],                // строки Inventory_of_Documents — описи (только чтение)
   options: { ...DEFAULT_OPTIONS },
   hiddenKeys: {},       // ключ группы (клиент+предмет договора) -> { ids: [...] } снимок id договоров на момент скрытия
   showHidden: false,
@@ -267,13 +273,14 @@ function initGrist() {
   // Customer_subscription — таблица виджета, об изменениях в ней Grist сообщает напрямую
   grist.onRecords(() => { if (firstLoadDone) loadRecords(); });
 
-  Promise.all([loadRecords(), loadSource(), loadInventory(), loadNotices()]).then(async () => {
+  Promise.all([loadRecords(), loadSource(), loadInventory(), loadNotices(), loadComponents(), loadIod()]).then(async () => {
     firstLoadDone = true;
     await autoSync();
-    // Tu_accounting/Inventory_book/Notice_of_change — сторонние таблицы, onRecords по ним
-    // не приходит, поэтому опрашиваем их периодически и досинхронизируем автоматически
+    // Tu_accounting/Inventory_book/Notice_of_change/Components/Inventory_of_Documents —
+    // сторонние таблицы, onRecords по ним не приходит, поэтому опрашиваем их периодически
+    // и досинхронизируем автоматически
     setInterval(async () => {
-      await Promise.all([loadSource(), loadInventory(), loadNotices()]);
+      await Promise.all([loadSource(), loadInventory(), loadNotices(), loadComponents(), loadIod()]);
       await autoSync();
       renderTable();
     }, AUTO_SYNC_INTERVAL_MS);
@@ -325,6 +332,31 @@ async function loadNotices() {
   } catch (e) {
     console.warn(`${NOTICE_TABLE} недоступна:`, e.message);
     S.notices = [];
+  }
+}
+
+// Components — справочник изделий (primary_use = цепочка «применяемость»), только чтение
+async function loadComponents() {
+  if (typeof grist === 'undefined') return;
+  try {
+    const rows = await grist.docApi.fetchTable(COMPONENTS_TABLE);
+    S.components = rowsToRecords(rows);
+  } catch (e) {
+    console.warn(`${COMPONENTS_TABLE} недоступна:`, e.message);
+    S.components = [];
+  }
+}
+
+// Inventory_of_Documents — описи (опись = отправка фирме), только чтение;
+// используется для расчёта "что фирма уже получила" (как в виджете описей)
+async function loadIod() {
+  if (typeof grist === 'undefined') return;
+  try {
+    const rows = await grist.docApi.fetchTable(IOD_TABLE);
+    S.iod = rowsToRecords(rows);
+  } catch (e) {
+    console.warn(`${IOD_TABLE} недоступна:`, e.message);
+    S.iod = [];
   }
 }
 
@@ -472,72 +504,242 @@ function groupRecordsForDisplay(rows) {
 }
 
 /* ═══════════════════════════════════
-   СВЯЗЬ С ИНВЕНТАРНОЙ КНИГОЙ / ИЗВЕЩЕНИЯМИ (только чтение)
-   Децимальный номер извлекается из текста тем же способом, что и в формуле
-   doc_filtered на стороне Grist: префикс вида "ЛМАП.402131.009" перед кодом
-   документа/суффиксом. Используется для (1) индикатора новых документов и
-   (5) раскрытия списка документов, когда doc_filtered = "КД".
+   ПЛАН ОТПРАВКИ ДОКУМЕНТОВ — перенесено из виджета описей
+   (widget-Archive-Inventories/index.html: rootComponent, orderDocKeys,
+   versionAt, firmSentVersions), адаптировано к данным этого виджета:
+   "заказ" здесь — это строка Customer_subscription (toOrderLike), а не
+   отдельная таблица заказов. Результат должен совпадать с планом описи
+   для той же пары фирма+заказ. Сам виджет описей не меняется.
 ═══════════════════════════════════ */
-const DECIMAL_NUMBER_RE = /[А-ЯЁ]+\.\d+\.\d+/g;
-function extractDecimalNumbers(text) {
-  return Array.from(new Set(String(text || '').match(DECIMAL_NUMBER_RE) || []));
+const DECIMAL_NUMBER_RE = /[А-ЯЁA-Z]+\.\d+\.\d+/g;
+function extractDns(text) {
+  const out = [];
+  String(text || '').replace(DECIMAL_NUMBER_RE, m => { if (out.indexOf(m) === -1) out.push(m); return m; });
+  return out;
+}
+function normDes(s) { return String(s || '').replace(/\s+/g, '').toUpperCase(); }
+function normFirm(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
+function todayEpoch() {
+  const d = new Date();
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 1000;
 }
 
-// находит записи Notice_of_change, чьё изделие (ProductName) соответствует
-// группе виджета (поле group может содержать несколько изделий через "; ")
-function noticesForGroup(g) {
-  const names = String(g.group || '').split(/;\s*/).map(s => s.trim().toLowerCase()).filter(Boolean);
-  if (!names.length) return [];
-  return S.notices.filter(n => {
-    const pname = String(n.ProductName || '').trim().toLowerCase();
-    if (!pname) return false;
-    return names.some(nm => nm.includes(pname) || pname.includes(nm));
+// Основное изделие — верхний узел цепочки primary_use.
+function rootComponent(c) {
+  const seen = {};
+  while (c && c.parent && !seen[c.id]) {
+    seen[c.id] = true;
+    const p = S.componentsById[c.parent];
+    if (!p) break;
+    c = p;
+  }
+  return c;
+}
+
+// Пересобирает служебные индексы (изделия/документы/извещения/описи/заказы)
+// из уже загруженных таблиц. Вызывается в начале renderTable() — дешёво для
+// объёма данных этого виджета, зато всегда актуально.
+function rebuildDerived() {
+  S.componentsById = {};
+  S.components.forEach(r => {
+    S.componentsById[r.id] = { id: r.id, name: r.name || '', dn: String(r.decimal_number || '').trim(), parent: r.primary_use || 0 };
+  });
+  S.componentByDn = {};
+  Object.keys(S.componentsById).forEach(k => {
+    const c = S.componentsById[k];
+    if (!c.dn) return;
+    // при дублях номера предпочитаем верхний узел (без primary_use)
+    if (!S.componentByDn[c.dn] || (S.componentByDn[c.dn].parent && !c.parent)) S.componentByDn[c.dn] = c;
+  });
+
+  S.docsById = {};
+  S.docsByKey = {};
+  S.inventory.forEach(r => {
+    const des = String(r.DocumentDesignation || '');
+    const pid = r.Product || 0;
+    let root = rootComponent(S.componentsById[pid]);
+    if (!root) {
+      const dn0 = extractDns(des)[0];
+      root = dn0 && S.componentByDn[dn0] ? rootComponent(S.componentByDn[dn0]) : null;
+    }
+    const d = {
+      id: r.id, des, key: normDes(des),
+      version: r.ChangeNumber != null ? r.ChangeNumber : null,
+      date: r.IssueDate != null ? r.IssueDate : null,
+      root: root ? root.id : 0
+    };
+    S.docsById[d.id] = d;
+    if (d.key) (S.docsByKey[d.key] = S.docsByKey[d.key] || []).push(d);
+  });
+
+  S.noticesByDocId = {};
+  S.notices.forEach(n => {
+    refListIds(n.DocumentDesignations).forEach(did => { (S.noticesByDocId[did] = S.noticesByDocId[did] || []).push(n.id); });
+  });
+
+  S.iodRaw = {};
+  S.iod.forEach(r => {
+    S.iodRaw[r.id] = {
+      dest: normFirm(r.Destination || ''),
+      date: r.IssueDate != null ? r.IssueDate : null,
+      order: typeof r.Order === 'number' ? r.Order : 0,
+      documents: refListIds(r.Documents)
+    };
+  });
+
+  S.orderLikes = S.records.filter(r => r.shipment_contract).map(toOrderLike);
+  S.orderLikesById = {};
+  S.orderLikes.forEach(o => { S.orderLikesById[o.id] = o; });
+}
+
+// Строка Customer_subscription как "заказ" в терминах плана отправки.
+function toOrderLike(r) {
+  const docText = String(r.doc_filtered || '');
+  const bought = {};
+  docText.split(';').forEach(tok => { const k = normDes(tok); if (k) bought[k] = true; });
+  return {
+    id: r.id,
+    client: normFirm(r.client),
+    advance: r.advance_date != null ? r.advance_date : null,
+    end: r.service_end != null ? r.service_end : null,
+    dns: extractDns(docText),
+    docText,
+    bought,
+    allKd: !!bought['КД']
+  };
+}
+
+// Основные изделия заказа (по децимальным номерам из doc_filtered).
+function productsForOrder(order) {
+  if (!order) return [];
+  const out = [];
+  order.dns.forEach(dn => {
+    const c = rootComponent(S.componentByDn[dn]);
+    if (c && out.indexOf(c) === -1) out.push(c);
+  });
+  return out;
+}
+
+// Нормализованные обозначения, купленные по заказу ("КД" — все документы изделий заказа).
+function orderDocKeys(order) {
+  if (!order) return [];
+  const roots = {};
+  if (order.allKd) productsForOrder(order).forEach(c => { roots[c.id] = true; });
+  return Object.keys(S.docsByKey).filter(k => {
+    if (order.bought[k]) return true;
+    return order.allKd && S.docsByKey[k].some(d => roots[d.root]);
   });
 }
 
-// децимальные номера изделия группы: сперва пробуем взять их прямо из
-// doc_filtered (стандартные обозначения), если пусто — идём через извещения
-// по изделию (fallback для случая doc_filtered = "КД")
-function productDecimalNumbersForGroup(g) {
-  const direct = extractDecimalNumbers(g.doc_filtered);
-  if (direct.length) return direct;
-  const nums = new Set();
-  noticesForGroup(g).forEach(n => extractDecimalNumbers(n.DocumentDesignations).forEach(x => nums.add(x)));
-  return Array.from(nums);
+// Последняя версия документа, выпущенная не позже date (null — без ограничения).
+function versionAt(key, date) {
+  let best = null;
+  (S.docsByKey[key] || []).forEach(d => {
+    if (date != null && d.date != null && d.date > date) return;
+    if (!best || (d.version || 0) > (best.version || 0) || ((d.version || 0) === (best.version || 0) && d.id > best.id)) best = d;
+  });
+  return best;
 }
 
-// уникальные обозначения документов изделия группы (для раскрытия "КД"),
-// отсортированы по алфавиту
-function noticeDesignationsForGroup(g) {
-  const map = new Map();
-  noticesForGroup(g).forEach(n => {
-    String(n.DocumentDesignations || '').split(/\s+/).filter(Boolean).forEach(tok => {
-      const [des, cn] = tok.split('#');
-      if (!des) return;
-      const num = cn ? Number(cn) : 0;
-      if (!map.has(des) || map.get(des) < num) map.set(des, num);
+// Что фирма уже получила: {обозначение: версия} — из описей (Inventory_of_Documents)
+// и из закрытых оплаченных заказов той же фирмы (повторная подписка — тот же пакет
+// документов повторно не считается нужным).
+function firmSentVersions(firm, order, asOf) {
+  const key = normFirm(firm).toLowerCase();
+  const sent = {};
+  function note(k, v) { v = v || 0; if (sent[k] == null || v > sent[k]) sent[k] = v; }
+  function noteOrder(o, date) {
+    orderDocKeys(o).forEach(k => { const d = versionAt(k, date); if (d) note(k, d.version); });
+  }
+  if (!key) return { sent };
+  Object.keys(S.iodRaw).forEach(rid => {
+    const r = S.iodRaw[rid];
+    if (r.dest.toLowerCase() !== key) return;
+    if (asOf != null && r.date != null && r.date > asOf) return;
+    if (r.documents.length) {
+      r.documents.forEach(id => { const d = S.docsById[id]; if (d && d.key) note(d.key, d.version); });
+    } else if (S.orderLikesById[r.order]) {
+      noteOrder(S.orderLikesById[r.order], r.date);
+    }
+  });
+  const limit = asOf != null ? asOf : todayEpoch();
+  S.orderLikes.forEach(o => {
+    if (o === order || o.client.toLowerCase() !== key || o.advance == null) return;
+    const closed = o.end != null ? o.end : o.advance;
+    if (closed < limit) noteOrder(o, closed);
+  });
+  return { sent };
+}
+
+// требование: лицензия бессрочна — никогда не считается истёкшей по service_end
+function isContractExpired(rec, today) {
+  if ((rec.contract_type || '') === 'лицензия') return false;
+  return rec.service_end != null && rec.service_end < today;
+}
+
+// Документы заказа с подписанной подпиской-меткой для отображения:
+// {label, ind:{color,tip}}. color: 'green' — актуальная версия; 'blue' —
+// версия новее отправленной, изм.0 или извещение есть (нужно включить в опись);
+// 'orange' — версия новее, изм.>0, извещения нет (нужно оформить извещение);
+// 'red' — обозначение не найдено в Inventory_book либо изделие не найдено
+// в Components.
+function orderIndicators(order) {
+  // orderDocKeys (как в описи) намеренно отдаёт только обозначения, реально
+  // найденные в Inventory_book — купленное-но-не-найденное там просто
+  // отсутствует. Здесь же нужно показать красный индикатор именно для такого
+  // случая, поэтому отдельно добавляем «сырые» купленные обозначения (кроме
+  // служебного «КД»), не найденные orderDocKeys.
+  // при "КД" прочие токены doc_filtered — это децимальные номера ИЗДЕЛИЙ
+  // (подсказка для productsForOrder), а не обозначения документов, поэтому
+  // красный «не найдено» для них не нужен — только для обычной покупки.
+  const boughtKeys = order.allKd ? [] : Object.keys(order.bought).filter(k => k !== 'КД');
+  const keys = Array.from(new Set([...boughtKeys, ...orderDocKeys(order)]));
+  if (!keys.length) return { docs: [], rowRed: true };
+
+  // человекочитаемая подпись: из исходного текста doc_filtered (сохраняет
+  // регистр/написание), а для раскрытия "КД" — из обозначения в Inventory_book
+  const originalByKey = {};
+  if (!order.allKd) {
+    order.docText.split(';').forEach(tok => {
+      const t = tok.trim();
+      const k = normDes(t);
+      if (k && !originalByKey[k]) originalByKey[k] = t;
     });
-  });
-  return Array.from(map.keys()).sort((a, b) => a.localeCompare(b, 'ru'));
+  }
+
+  const asOf = todayEpoch();
+  const base = firmSentVersions(order.client, order, asOf);
+  const items = keys.map(key => {
+    const doc = versionAt(key, asOf);
+    const label = originalByKey[key] || (doc ? doc.des : key);
+    let ind;
+    if (!doc) {
+      ind = { color: 'red', tip: `Обозначение «${label}» не найдено в инвентарной книге` };
+    } else if (!doc.root) {
+      ind = { color: 'red', tip: `Изделие документа «${doc.des}» не найдено в справочнике изделий` };
+    } else {
+      const last = doc.version || 0;
+      const sent = base.sent[doc.key];
+      if (sent != null && sent >= last) {
+        ind = { color: 'green', tip: `У абонента последняя положенная версия (изм. ${last})` };
+      } else {
+        const hasNotice = (S.noticesByDocId[doc.id] || []).length > 0;
+        const changeTip = sent == null ? 'новый документ' : `было изм. ${sent} → нужно изм. ${last}`;
+        ind = (last > 0 && !hasNotice)
+          ? { color: 'orange', tip: `${changeTip} — нужно оформить извещение` }
+          : { color: 'blue', tip: `${changeTip} — нужно включить в опись` };
+      }
+    }
+    return { label, ind };
+  }).sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+
+  const rowRed = items.every(it => it.ind.color === 'red');
+  return { docs: items, rowRed };
 }
 
-// требование 1: индикатор "в инвентарную книгу добавлен документ новее аванса".
-// Если действующий (primary) договор группы уже закрыт — по просьбе
-// пользователя ориентир берётся со следующего договора того же клиента с тем
-// же набором документов; но primary в группе всегда самый свежий договор
-// (сортировка), поэтому "следующего" внутри группы структурно не существует —
-// индикатора нет, как и было явно оговорено.
-function hasNewInventoryDoc(g) {
-  const p = g.primary;
-  const closed = p.service_end != null && p.service_end < Math.floor(Date.now() / 1000);
-  if (closed) return false;
-  if (p.advance_date == null) return false;
-  const nums = productDecimalNumbersForGroup(g);
-  if (!nums.length) return false;
-  return S.inventory.some(row => {
-    const dn = row.Product_dn || row.ProductName_dn || '';
-    return dn && nums.includes(dn) && row.IssueDate != null && row.IssueDate > p.advance_date;
-  });
+function statusDot(color, tip) {
+  const cls = { green: 'tag-green', blue: 'tag-blue', orange: 'tag-orange', red: 'tag-red' }[color] || 'tag-grey';
+  return `<span class="tag ${cls} cs-status-dot" data-tip="${esc(tip)}" onmouseenter="showTooltip(this)" onmouseleave="hideTooltip()">●</span>`;
 }
 
 function toggleKdMore(id, btn, count) {
@@ -568,6 +770,7 @@ function computeRowSpans(items, keyFn) {
    РЕНДЕР ТАБЛИЦЫ
 ═══════════════════════════════════ */
 function renderTable() {
+  rebuildDerived();
   const container = document.getElementById('tableBody');
   const filter = (document.getElementById('filterInput').value || '').trim().toLowerCase();
   const today = Math.floor(Date.now() / 1000);
@@ -585,17 +788,15 @@ function renderTable() {
   autoUnhideNewContracts(groups); // требование 2: новый договор клиента снимает ручное скрытие
   groups = groups.filter(g => S.showHidden || !isHidden(g.key));
 
-  // требование: наверху всегда фирмы с действующей подпиской либо с новым
-  // документом, который нужно поставить (hasNewInventoryDoc) — приоритет
+  // требование: наверху всегда фирмы с действующей подпиской — приоритет
   // считается по клиенту целиком, чтобы его строки не расклеивались при
   // объединении ячеек (rowspan) ниже
   groups.forEach(g => {
-    g._expired = g.primary.service_end != null && g.primary.service_end < today;
-    g._newDoc = hasNewInventoryDoc(g);
+    g._expired = isContractExpired(g.primary, today);
   });
   const clientPriority = new Map();
   groups.forEach(g => {
-    const pr = (!g._expired || g._newDoc) ? 1 : 0;
+    const pr = !g._expired ? 1 : 0;
     clientPriority.set(g.client, Math.max(clientPriority.get(g.client) || 0, pr));
   });
   groups.sort((a, b) =>
@@ -638,7 +839,7 @@ function renderTable() {
 
     if (row.kind === 'hist') {
       const c = row.c;
-      const expiredH = c.service_end != null && c.service_end < today;
+      const expiredH = isContractExpired(c, today);
       const endStrH = fmtDate(c.service_end);
       const unitLabelH = c.service_unit === 'weeks' ? 'нед.' : 'г.';
       const dateStrH = fmtDate(c.advance_date) || 'не указано';
@@ -667,30 +868,33 @@ function renderTable() {
     const rowClasses = ['', expired ? 'cs-row-expired' : 'cs-row-active', hidden ? 'cs-row-hidden' : '', clientStartClass]
       .filter(Boolean).join(' ');
 
-    // требование 5: если doc_filtered = "КД" — раскрываем реальный список
-    // документов изделия через Notice_of_change вместо голого "КД"
-    let docCellHtml;
-    if (String(g.doc_filtered || '').trim() === 'КД') {
-      const list = noticeDesignationsForGroup(g);
-      if (list.length) {
-        const shown = list.slice(0, KD_LIST_LIMIT);
-        const rest = list.slice(KD_LIST_LIMIT);
+    // требование 5: "КД" и обычный список документов раскрываются одинаково —
+    // через orderDocKeys (купленные документы +, если "КД", все документы
+    // основных изделий заказа). требование 3: у каждого документа — цветной
+    // индикатор того, что с ним нужно сделать; если ВЕСЬ заказ не удалось
+    // связать со справочниками — значок на уровне строки. требование 4: для
+    // истёкшей подписки индикаторов нет вообще.
+    let docCellHtml, rowBadge = '';
+    const docText = String(g.doc_filtered || '').trim();
+    if (expired || !docText) {
+      docCellHtml = esc(g.doc_filtered || '—');
+    } else {
+      const plan = orderIndicators(toOrderLike(p));
+      if (plan.rowRed) {
+        docCellHtml = esc(g.doc_filtered || '—');
+        rowBadge = statusDot('red', 'Не удалось связать документы заказа со справочниками (инвентарная книга / изделия)');
+      } else {
+        const lines = plan.docs.map(it => `<span class="cs-doc-line">${esc(it.label)}${statusDot(it.ind.color, it.ind.tip)}</span>`);
+        const shown = lines.slice(0, KD_LIST_LIMIT);
+        const rest = lines.slice(KD_LIST_LIMIT);
         const domId = 'kd-' + encodeURIComponent(g.key).replace(/[^a-zA-Z0-9]/g, '');
-        docCellHtml = `<div class="cs-doc-list">${shown.map(esc).join('<br>')}</div>` +
+        docCellHtml = `<div class="cs-doc-list">${shown.join('<br>')}</div>` +
           (rest.length
-            ? `<div class="cs-doc-list" id="${domId}-more" style="display:none">${rest.map(esc).join('<br>')}</div>
+            ? `<div class="cs-doc-list" id="${domId}-more" style="display:none">${rest.join('<br>')}</div>
                <button class="cell-edit-btn cs-more-btn" onclick="toggleKdMore('${domId}', this, ${rest.length})">Показать полностью (+${rest.length})</button>`
             : '');
-      } else {
-        docCellHtml = esc(g.doc_filtered || '—');
       }
-    } else {
-      docCellHtml = esc(g.doc_filtered || '—');
     }
-    // требование 1: индикатор нового документа в инвентарной книге (иконка вместо текста)
-    const newDocBadge = hasNewInventoryDoc(g)
-      ? `<span class="tag tag-blue cs-newdoc-badge" data-tip="${esc('В инвентарную книгу добавлен документ новее даты аванса')}" onmouseenter="showTooltip(this)" onmouseleave="hideTooltip()">${newDocSvg()}</span>`
-      : '';
 
     // столбец «Оплата» основной строки — платёж актуального (primary) договора;
     // остальные (старые) договоры группы доступны по развороту строки (кнопка
@@ -728,7 +932,7 @@ function renderTable() {
     <tr class="${rowClasses}">
       ${clientCell}
       ${groupCell}
-      <td class="cs-doc">${expandBtn}${docCellHtml}${newDocBadge ? ' ' + newDocBadge : ''}${hidden ? ' <span class="tag tag-grey">скрыто</span>' : ''}</td>
+      <td class="cs-doc">${expandBtn}${docCellHtml}${rowBadge ? ' ' + rowBadge : ''}${hidden ? ' <span class="tag tag-grey">скрыто</span>' : ''}</td>
       <td><div class="cs-payments">${payments}</div></td>
       <td>${yearsCell}</td>
       <td>
@@ -769,7 +973,6 @@ function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&
 function pencilSvg() { return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>'; }
 function checkSvg() { return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>'; }
 function xSvg() { return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>'; }
-function newDocSvg() { return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 18v-6M9 15h6"/></svg>'; }
 function chevronSvg(open) {
   return open
     ? '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>'
