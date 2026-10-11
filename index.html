@@ -96,6 +96,7 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .cs-doc-line{display:inline-flex;align-items:center}
 .cs-doc-cell{display:flex;align-items:flex-start;gap:4px}
 .cs-doc-body{flex:1;min-width:0}
+.cs-expand-spacer{display:inline-block;width:22px;height:22px;flex-shrink:0}
 
 .eye-btn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid transparent;border-radius:4pt;background:transparent;color:var(--tx3);cursor:pointer;transition:all .1s;padding:0}
 .eye-btn:hover{background:var(--surf3);color:var(--tx)}
@@ -144,7 +145,7 @@ tr.cs-row-history .cs-end-cell,tr.cs-row-history .cs-date-cell{font-size:11px}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.10.0</footer>
+<footer class="ver-footer">v0.10.1</footer>
 <div id="gTooltip"></div>
 
 <script>
@@ -813,6 +814,7 @@ function renderTable() {
   groups.sort((a, b) =>
     (clientPriority.get(b.client) || 0) - (clientPriority.get(a.client) || 0) ||
     String(a.client || '').localeCompare(String(b.client || ''), 'ru') ||
+    (a._expired ? 1 : 0) - (b._expired ? 1 : 0) || // действующие — перед истёкшими, в пределах клиента
     String(a.group || '').localeCompare(String(b.group || ''), 'ru') ||
     String(a.doc_filtered || '').localeCompare(String(b.doc_filtered || ''), 'ru'));
 
@@ -917,7 +919,7 @@ function renderTable() {
 
     const expandBtn = g.contracts.length > 1
       ? `<button class="cell-edit-btn cs-expand-btn" onclick="toggleExpand('${encodeURIComponent(g.key)}')" title="${S.expandedKeys.has(g.key) ? 'Свернуть историю' : `Показать старые подписки (${g.contracts.length - 1})`}">${chevronSvg(S.expandedKeys.has(g.key))}</button>`
-      : '';
+      : '<span class="cs-expand-spacer"></span>'; // держит документ на одном месте и когда кнопки нет
 
     const unitLabel = p.service_unit === 'weeks' ? 'нед.' : 'г.';
     const yearsCell = editingYearsId === p.id ? `
