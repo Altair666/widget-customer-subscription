@@ -110,14 +110,18 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .modal-body{padding:12px 14px;overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:8px}
 .modal-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3)}
 .modal-select{height:30px;border:1px solid var(--brd);border-radius:var(--r);padding:0 8px;font-family:inherit;font-size:12px;background:var(--surf);color:var(--tx)}
-.modal-search{height:30px;border:1px solid var(--brd);border-radius:var(--r);padding:0 8px;font-family:inherit;font-size:12px;background:var(--surf);color:var(--tx);width:100%;box-sizing:border-box}
+.modal-search{height:30px;border:1px solid var(--brd);border-radius:var(--r);padding:0 8px;font-family:inherit;font-size:12px;background:var(--surf);color:var(--tx);width:100%;box-sizing:border-box;flex-shrink:0}
 .modal-search:focus{outline:none;border-color:var(--acc)}
-.modal-rootlist{display:flex;flex-direction:column;gap:2px;border:1px solid var(--brd);border-radius:var(--r);padding:6px;max-height:140px;overflow-y:auto}
+.modal-combo{display:flex;flex-direction:column;border:1px solid var(--brd);border-radius:var(--r);overflow:hidden}
+.modal-combo:focus-within{border-color:var(--acc)}
+.modal-combo .modal-search{border:none;border-radius:0;border-bottom:1px solid var(--brd)}
+.modal-combo .modal-search:focus{border-color:transparent;border-bottom-color:var(--acc)}
+.modal-rootlist{display:flex;flex-direction:column;gap:2px;padding:6px;max-height:140px;overflow-y:auto}
 .modal-root-row{font-size:12px;font-family:var(--mono);padding:4px 6px;border-radius:4pt;cursor:pointer}
 .modal-root-row:hover{background:var(--surf2)}
 .modal-root-row.active{background:var(--acc);color:#fff}
 .modal-doclist{display:flex;flex-direction:column;gap:4px;border:1px solid var(--brd);border-radius:var(--r);padding:8px;max-height:280px;overflow-y:auto}
-.modal-doc-row{display:flex;align-items:center;gap:7px;font-size:12px;font-family:var(--mono);padding:3px 2px;border-radius:4pt;cursor:pointer}
+.modal-doc-row{display:flex;align-items:center;gap:7px;font-size:12px;font-family:var(--mono);padding:7px 4px;border-radius:4pt;cursor:pointer}
 .modal-doc-row:hover{background:var(--surf2)}
 .modal-empty{font-size:12px;color:var(--tx3);font-style:italic;padding:8px 2px}
 .modal-foot{display:flex;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--brd);background:var(--surf2)}
@@ -167,7 +171,7 @@ tr.cs-row-history .cs-end-cell,tr.cs-row-history .cs-date-cell{font-size:11px}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.12.0</footer>
+<footer class="ver-footer">v0.12.1</footer>
 <div id="gTooltip"></div>
 <div id="linkModalRoot"></div>
 
@@ -602,8 +606,10 @@ function renderLinkModal() {
         </div>
         <div class="modal-body">
           <label class="modal-label">Корневое изделие (ЕСКД/ЕСПД/ЕСТД)</label>
-          <input class="modal-search" type="text" placeholder="Поиск по номеру или наименованию…" value="${esc(S.linkModal.rootQuery)}" oninput="onLinkRootQuery(this.value)">
-          <div class="modal-rootlist" id="linkRootList">${rootListHtml()}</div>
+          <div class="modal-combo">
+            <input class="modal-search" type="text" placeholder="Поиск по номеру или наименованию…" value="${esc(S.linkModal.rootQuery)}" oninput="onLinkRootQuery(this.value)">
+            <div class="modal-rootlist" id="linkRootList">${rootListHtml()}</div>
+          </div>
           <label class="modal-label">Документы изделия</label>
           <input class="modal-search" type="text" placeholder="Поиск по документу…" value="${esc(S.linkModal.docQuery)}" oninput="onLinkDocQuery(this.value)">
           <div class="modal-doclist" id="linkDocList">${docListHtml()}</div>
@@ -781,9 +787,9 @@ function rebuildDerived() {
   // primary_use (Ref:Components), либо primary_use==0 — узел сам является
   // корнем (самостоятельный продукт, не привязанный к дереву ЕСКД).
   S.espdById = {};
-  S.espdComponents.forEach(r => { S.espdById[r.id] = { id: r.id, name: r.name || '', parent: r.primary_use || 0 }; });
+  S.espdComponents.forEach(r => { S.espdById[r.id] = { id: r.id, name: r.name || '', num: String(r.espd_number || '').trim(), parent: r.primary_use || 0 }; });
   S.estdById = {};
-  S.estdComponents.forEach(r => { S.estdById[r.id] = { id: r.id, name: r.name || '', parent: r.primary_use || 0 }; });
+  S.estdComponents.forEach(r => { S.estdById[r.id] = { id: r.id, name: r.name || '', num: String(r.estd_number || '').trim(), parent: r.primary_use || 0 }; });
 
   // Единый список "корневых изделий" карточки привязки: верхние узлы ЕСКД
   // (есть decimal_number) + самостоятельные корни ЕСПД/ЕСТД (primary_use==0).
@@ -796,12 +802,12 @@ function rebuildDerived() {
   Object.keys(S.espdById).forEach(k => {
     const e = S.espdById[k];
     if (e.parent) return;
-    S.rootsById['e:' + e.id] = { id: 'e:' + e.id, dn: '', name: e.name, system: 'espd' };
+    S.rootsById['e:' + e.id] = { id: 'e:' + e.id, dn: e.num, name: e.name, system: 'espd' };
   });
   Object.keys(S.estdById).forEach(k => {
     const e = S.estdById[k];
     if (e.parent) return;
-    S.rootsById['t:' + e.id] = { id: 't:' + e.id, dn: '', name: e.name, system: 'estd' };
+    S.rootsById['t:' + e.id] = { id: 't:' + e.id, dn: e.num, name: e.name, system: 'estd' };
   });
 
   S.docsById = {};
