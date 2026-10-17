@@ -110,6 +110,12 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .modal-body{padding:12px 14px;overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:8px}
 .modal-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3)}
 .modal-select{height:30px;border:1px solid var(--brd);border-radius:var(--r);padding:0 8px;font-family:inherit;font-size:12px;background:var(--surf);color:var(--tx)}
+.modal-search{height:30px;border:1px solid var(--brd);border-radius:var(--r);padding:0 8px;font-family:inherit;font-size:12px;background:var(--surf);color:var(--tx);width:100%;box-sizing:border-box}
+.modal-search:focus{outline:none;border-color:var(--acc)}
+.modal-rootlist{display:flex;flex-direction:column;gap:2px;border:1px solid var(--brd);border-radius:var(--r);padding:6px;max-height:140px;overflow-y:auto}
+.modal-root-row{font-size:12px;font-family:var(--mono);padding:4px 6px;border-radius:4pt;cursor:pointer}
+.modal-root-row:hover{background:var(--surf2)}
+.modal-root-row.active{background:var(--acc);color:#fff}
 .modal-doclist{display:flex;flex-direction:column;gap:4px;border:1px solid var(--brd);border-radius:var(--r);padding:8px;max-height:280px;overflow-y:auto}
 .modal-doc-row{display:flex;align-items:center;gap:7px;font-size:12px;font-family:var(--mono);padding:3px 2px;border-radius:4pt;cursor:pointer}
 .modal-doc-row:hover{background:var(--surf2)}
@@ -161,7 +167,7 @@ tr.cs-row-history .cs-end-cell,tr.cs-row-history .cs-date-cell{font-size:11px}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.11.0</footer>
+<footer class="ver-footer">v0.12.0</footer>
 <div id="gTooltip"></div>
 <div id="linkModalRoot"></div>
 
@@ -171,6 +177,8 @@ const SRC_TABLE = 'Tu_accounting';
 const INV_TABLE = 'Inventory_book';
 const NOTICE_TABLE = 'Notice_of_change';
 const COMPONENTS_TABLE = 'Components';
+const ESPD_TABLE = 'ESPD_components';
+const ESTD_TABLE = 'Estd_components';
 const IOD_TABLE = 'Inventory_of_Documents';
 // client/subject/main_doc/invoice_date/advance_date в Customer_subscription — formula-колонки
 // на стороне Grist, вычисляются из tu_accounting_refs; виджет их больше не заполняет.
@@ -190,14 +198,16 @@ const S = {
   sourceRows: [],      // строки Tu_accounting
   inventory: [],        // строки Inventory_book (только чтение)
   notices: [],           // строки Notice_of_change (только чтение)
-  components: [],        // строки Components (только чтение)
+  components: [],        // строки Components (только чтение, ЕСКД)
+  espdComponents: [],     // строки ESPD_components (только чтение, ЕСПД)
+  estdComponents: [],     // строки Estd_components (только чтение, ЕСТД)
   iod: [],                // строки Inventory_of_Documents — описи (только чтение)
   options: { ...DEFAULT_OPTIONS },
   hiddenKeys: {},       // ключ группы (клиент+предмет договора) -> { ids: [...] } снимок id договоров на момент скрытия
   showHidden: false,
   lastGroups: new Map(), // ключ группы -> актуальная группа (для setHidden/автопоказа)
   expandedKeys: new Set(), // ключ группы -> развёрнута ли история старых договоров
-  linkModal: null, // { orderId, rootId, checked:Set<key> } — открытая карточка привязки документов
+  linkModal: null, // { orderId, rootId, checked:Set<key>, rootQuery, docQuery } — открытая карточка привязки документов
 };
 
 let firstLoadDone = false;
@@ -297,7 +307,7 @@ function initGrist() {
   // Customer_subscription — таблица виджета, об изменениях в ней Grist сообщает напрямую
   grist.onRecords(() => { if (firstLoadDone) loadRecords(); });
 
-  Promise.all([loadRecords(), loadSource(), loadInventory(), loadNotices(), loadComponents(), loadIod()]).then(async () => {
+  Promise.all([loadRecords(), loadSource(), loadInventory(), loadNotices(), loadComponents(), loadEspdComponents(), loadEstdComponents(), loadIod()]).then(async () => {
     firstLoadDone = true;
     await autoSync();
     // loadRecords() уже вызвал renderTable() сразу по приходу своих данных —
@@ -310,7 +320,7 @@ function initGrist() {
     // сторонние таблицы, onRecords по ним не приходит, поэтому опрашиваем их периодически
     // и досинхронизируем автоматически
     setInterval(async () => {
-      await Promise.all([loadSource(), loadInventory(), loadNotices(), loadComponents(), loadIod()]);
+      await Promise.all([loadSource(), loadInventory(), loadNotices(), loadComponents(), loadEspdComponents(), loadEstdComponents(), loadIod()]);
       await autoSync();
       renderTable();
     }, AUTO_SYNC_INTERVAL_MS);
@@ -374,6 +384,30 @@ async function loadComponents() {
   } catch (e) {
     console.warn(`${COMPONENTS_TABLE} недоступна:`, e.message);
     S.components = [];
+  }
+}
+
+// ESPD_components/Estd_components — справочники документов ЕСПД/ЕСТД (у документов
+// этих систем бывает Inventory_book.Product не заполнен — реальная применяемость
+// лежит в primary_use этих таблиц, Ref:Components); только чтение.
+async function loadEspdComponents() {
+  if (typeof grist === 'undefined') return;
+  try {
+    const rows = await grist.docApi.fetchTable(ESPD_TABLE);
+    S.espdComponents = rowsToRecords(rows);
+  } catch (e) {
+    console.warn(`${ESPD_TABLE} недоступна:`, e.message);
+    S.espdComponents = [];
+  }
+}
+async function loadEstdComponents() {
+  if (typeof grist === 'undefined') return;
+  try {
+    const rows = await grist.docApi.fetchTable(ESTD_TABLE);
+    S.estdComponents = rowsToRecords(rows);
+  } catch (e) {
+    console.warn(`${ESTD_TABLE} недоступна:`, e.message);
+    S.estdComponents = [];
   }
 }
 
@@ -469,23 +503,34 @@ function openLinkModal(id) {
   if (!order) return;
   const checked = new Set(order.linkedIds.map(lid => S.docsById[lid]).filter(Boolean).map(d => d.key));
   const products = productsForOrder(order);
-  const roots = allRootComponents();
-  const rootId = products.length ? products[0].id : (roots.length ? roots[0].id : 0);
-  S.linkModal = { orderId: id, rootId, checked };
+  const roots = allRoots();
+  const rootId = products.length ? ('c:' + products[0].id) : (roots.length ? roots[0].id : null);
+  S.linkModal = { orderId: id, rootId, checked, rootQuery: '', docQuery: '' };
   renderLinkModal();
 }
 function closeLinkModal() { S.linkModal = null; renderLinkModal(); }
-function setLinkModalRoot(rootId) {
+function setLinkModalRoot(encodedRootId) {
   if (!S.linkModal) return;
-  S.linkModal.rootId = Number(rootId);
-  renderLinkModal();
+  S.linkModal.rootId = decodeURIComponent(encodedRootId);
+  refreshRootList();
+  refreshDocList();
+}
+function onLinkRootQuery(value) {
+  if (!S.linkModal) return;
+  S.linkModal.rootQuery = value;
+  refreshRootList();
+}
+function onLinkDocQuery(value) {
+  if (!S.linkModal) return;
+  S.linkModal.docQuery = value;
+  refreshDocList();
 }
 function toggleLinkDoc(encodedKey) {
   if (!S.linkModal) return;
   const key = decodeURIComponent(encodedKey);
   if (S.linkModal.checked.has(key)) S.linkModal.checked.delete(key);
   else S.linkModal.checked.add(key);
-  renderLinkModal();
+  refreshDocList();
 }
 async function saveLinkModal() {
   if (!S.linkModal) return;
@@ -505,15 +550,47 @@ async function saveLinkModal() {
     alert('Не удалось сохранить привязку: ' + e.message);
   }
 }
+
+// Список корневых изделий — рендерится отдельным фрагментом (#linkRootList),
+// чтобы ввод в поле поиска (onLinkRootQuery) не пересоздавал сам инпут и не
+// сбивал фокус/курсор на каждую нажатую клавишу.
+function rootListHtml() {
+  const roots = filterRoots(S.linkModal.rootQuery);
+  if (!roots.length) return '<div class="modal-empty">Ничего не найдено</div>';
+  return roots.map(r => `
+    <div class="modal-root-row${r.id === S.linkModal.rootId ? ' active' : ''}" onclick="setLinkModalRoot('${encodeURIComponent(r.id)}')">${esc(rootLabel(r))}</div>`).join('');
+}
+function refreshRootList() {
+  const el = document.getElementById('linkRootList');
+  if (el) el.innerHTML = rootListHtml();
+}
+
+// Список документов выбранного корня — тоже отдельный фрагмент (#linkDocList),
+// по той же причине (поиск по документам + мгновенный подъём отмеченных
+// чекбоксом не должны трогать поле ввода поиска).
+function docListHtml() {
+  const docs = S.linkModal.rootId ? filteredDocsForRoot(S.linkModal.rootId, S.linkModal.docQuery, S.linkModal.checked) : [];
+  if (!docs.length) return '<div class="modal-empty">Нет документов с версией &gt; 0 у этого изделия</div>';
+  return docs.map(d => `
+    <label class="modal-doc-row">
+      <input type="checkbox" ${S.linkModal.checked.has(d.key) ? 'checked' : ''} onchange="toggleLinkDoc('${encodeURIComponent(d.key)}')">
+      <span>${esc(d.label)}</span>
+    </label>`).join('');
+}
+function refreshDocList() {
+  const el = document.getElementById('linkDocList');
+  if (el) el.innerHTML = docListHtml();
+  const cnt = document.getElementById('linkModalCount');
+  if (cnt) cnt.textContent = `${S.linkModal.checked.size} выбрано`;
+}
+
 function renderLinkModal() {
-  const root = document.getElementById('linkModalRoot');
-  if (!S.linkModal) { root.innerHTML = ''; return; }
+  const rootEl = document.getElementById('linkModalRoot');
+  if (!S.linkModal) { rootEl.innerHTML = ''; return; }
   const order = S.orderLikesById[S.linkModal.orderId];
-  if (!order) { S.linkModal = null; root.innerHTML = ''; return; }
+  if (!order) { S.linkModal = null; rootEl.innerHTML = ''; return; }
   const rec = S.records.find(r => r.id === S.linkModal.orderId);
-  const roots = allRootComponents();
-  const docs = docsForRoot(S.linkModal.rootId);
-  root.innerHTML = `
+  rootEl.innerHTML = `
     <div class="modal-backdrop" onclick="closeLinkModal()">
       <div class="modal-card" onclick="event.stopPropagation()">
         <div class="modal-head">
@@ -524,21 +601,15 @@ function renderLinkModal() {
           <button class="cell-edit-btn cancel" onclick="closeLinkModal()" title="Закрыть">${xSvg()}</button>
         </div>
         <div class="modal-body">
-          <label class="modal-label">Корневое изделие</label>
-          <select class="modal-select" onchange="setLinkModalRoot(this.value)">
-            ${roots.map(r => `<option value="${r.id}" ${r.id === S.linkModal.rootId ? 'selected' : ''}>${esc(r.name || r.dn || ('#' + r.id))}</option>`).join('')}
-          </select>
-          <div class="modal-doclist">
-            ${docs.length ? docs.map(d => `
-              <label class="modal-doc-row">
-                <input type="checkbox" ${S.linkModal.checked.has(d.key) ? 'checked' : ''} onchange="toggleLinkDoc('${encodeURIComponent(d.key)}')">
-                <span>${esc(d.label)}</span>
-              </label>`).join('')
-              : '<div class="modal-empty">Нет документов с версией &gt; 0 у этого изделия</div>'}
-          </div>
+          <label class="modal-label">Корневое изделие (ЕСКД/ЕСПД/ЕСТД)</label>
+          <input class="modal-search" type="text" placeholder="Поиск по номеру или наименованию…" value="${esc(S.linkModal.rootQuery)}" oninput="onLinkRootQuery(this.value)">
+          <div class="modal-rootlist" id="linkRootList">${rootListHtml()}</div>
+          <label class="modal-label">Документы изделия</label>
+          <input class="modal-search" type="text" placeholder="Поиск по документу…" value="${esc(S.linkModal.docQuery)}" oninput="onLinkDocQuery(this.value)">
+          <div class="modal-doclist" id="linkDocList">${docListHtml()}</div>
         </div>
         <div class="modal-foot">
-          <span class="modal-count">${S.linkModal.checked.size} выбрано</span>
+          <span class="modal-count" id="linkModalCount">${S.linkModal.checked.size} выбрано</span>
           <button class="btn" onclick="closeLinkModal()">Отмена</button>
           <button class="btn btn-primary" onclick="saveLinkModal()">Сохранить</button>
         </div>
@@ -654,6 +725,42 @@ function rootComponent(c) {
   return c;
 }
 
+// Корень документа Inventory_book (запись S.rootsById) по его ссылкам
+// Product/NameNodeEspd/NameNodeEstd — покупаться может документ любой из
+// трёх систем (ЕСКД/ЕСПД/ЕСТД), поэтому разрешение идёт через применяемость
+// соответствующего справочника до верхнего узла ЕСКД, либо, если у
+// ЕСПД/ЕСТД-узла применяемость не указана (самостоятельный продукт), корнем
+// становится сам этот узел.
+function resolveDocRoot(productId, espdId, estdId) {
+  if (productId) {
+    const c = S.componentsById[productId];
+    if (c) { const top = rootComponent(c); if (top) return S.rootsById['c:' + top.id]; }
+  }
+  if (espdId) {
+    const e = S.espdById[espdId];
+    if (e) {
+      if (e.parent) {
+        const c = S.componentsById[e.parent];
+        const top = c ? rootComponent(c) : null;
+        if (top) return S.rootsById['c:' + top.id];
+      }
+      return S.rootsById['e:' + e.id];
+    }
+  }
+  if (estdId) {
+    const e = S.estdById[estdId];
+    if (e) {
+      if (e.parent) {
+        const c = S.componentsById[e.parent];
+        const top = c ? rootComponent(c) : null;
+        if (top) return S.rootsById['c:' + top.id];
+      }
+      return S.rootsById['t:' + e.id];
+    }
+  }
+  return null;
+}
+
 // Пересобирает служебные индексы (изделия/документы/извещения/описи/заказы)
 // из уже загруженных таблиц. Вызывается в начале renderTable() — дешёво для
 // объёма данных этого виджета, зато всегда актуально.
@@ -670,15 +777,43 @@ function rebuildDerived() {
     if (!S.componentByDn[c.dn] || (S.componentByDn[c.dn].parent && !c.parent)) S.componentByDn[c.dn] = c;
   });
 
+  // ЕСПД/ЕСТД: собственных decimal_number нет, "применяемость" — через
+  // primary_use (Ref:Components), либо primary_use==0 — узел сам является
+  // корнем (самостоятельный продукт, не привязанный к дереву ЕСКД).
+  S.espdById = {};
+  S.espdComponents.forEach(r => { S.espdById[r.id] = { id: r.id, name: r.name || '', parent: r.primary_use || 0 }; });
+  S.estdById = {};
+  S.estdComponents.forEach(r => { S.estdById[r.id] = { id: r.id, name: r.name || '', parent: r.primary_use || 0 }; });
+
+  // Единый список "корневых изделий" карточки привязки: верхние узлы ЕСКД
+  // (есть decimal_number) + самостоятельные корни ЕСПД/ЕСТД (primary_use==0).
+  S.rootsById = {};
+  Object.keys(S.componentsById).forEach(k => {
+    const c = S.componentsById[k];
+    if (c.parent) return;
+    S.rootsById['c:' + c.id] = { id: 'c:' + c.id, dn: c.dn, name: c.name, system: 'eskd' };
+  });
+  Object.keys(S.espdById).forEach(k => {
+    const e = S.espdById[k];
+    if (e.parent) return;
+    S.rootsById['e:' + e.id] = { id: 'e:' + e.id, dn: '', name: e.name, system: 'espd' };
+  });
+  Object.keys(S.estdById).forEach(k => {
+    const e = S.estdById[k];
+    if (e.parent) return;
+    S.rootsById['t:' + e.id] = { id: 't:' + e.id, dn: '', name: e.name, system: 'estd' };
+  });
+
   S.docsById = {};
   S.docsByKey = {};
   S.inventory.forEach(r => {
     const des = String(r.DocumentDesignation || '');
-    const pid = r.Product || 0;
-    let root = rootComponent(S.componentsById[pid]);
+    let root = resolveDocRoot(r.Product || 0, r.NameNodeEspd || 0, r.NameNodeEstd || 0);
     if (!root) {
       const dn0 = extractDns(des)[0];
-      root = dn0 && S.componentByDn[dn0] ? rootComponent(S.componentByDn[dn0]) : null;
+      const c = dn0 ? S.componentByDn[dn0] : null;
+      const top = c ? rootComponent(c) : null;
+      root = top ? S.rootsById['c:' + top.id] : null;
     }
     const d = {
       id: r.id, des, key: normDes(des),
@@ -735,15 +870,26 @@ function toOrderLike(r) {
   };
 }
 
-// Все корневые изделия справочника Components (для выбора в карточке привязки).
-function allRootComponents() {
-  const seen = {};
-  const out = [];
-  Object.keys(S.componentsById).forEach(k => {
-    const r = rootComponent(S.componentsById[k]);
-    if (r && !seen[r.id]) { seen[r.id] = true; out.push(r); }
-  });
-  return out.sort((a, b) => String(a.name || a.dn).localeCompare(String(b.name || b.dn), 'ru'));
+// Подпись корневого изделия для карточки привязки: "децимальныйномер наименование"
+// (децимальный номер есть только у верхних узлов ЕСКД; самостоятельные корни
+// ЕСПД/ЕСТД показываются просто по имени).
+function rootLabel(r) {
+  const dn = (r.dn || '').trim(), name = (r.name || '').trim();
+  return dn && name ? `${dn} ${name}` : (dn || name || ('#' + r.id));
+}
+
+// Все корневые изделия (верхние узлы ЕСКД + самостоятельные корни ЕСПД/ЕСТД)
+// для выбора в карточке привязки, отсортированные по подписи "номер имя".
+function allRoots() {
+  return Object.values(S.rootsById).sort((a, b) => rootLabel(a).localeCompare(rootLabel(b), 'ru'));
+}
+
+// Корневые изделия, подпись которых (номер и/или наименование) содержит query.
+function filterRoots(query) {
+  const roots = allRoots();
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return roots;
+  return roots.filter(r => rootLabel(r).toLowerCase().indexOf(q) !== -1);
 }
 
 // Документы изделия (по корню), у которых есть версия > 0 в инвентарной книге —
@@ -758,6 +904,16 @@ function docsForRoot(rootId) {
     out.push({ key, label: list[0].des });
   });
   return out.sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+}
+
+// docsForRoot + фильтр по тексту и подъём отмеченных чекбоксом в начало списка.
+function filteredDocsForRoot(rootId, query, checked) {
+  const q = String(query || '').trim().toLowerCase();
+  let docs = docsForRoot(rootId);
+  if (q) docs = docs.filter(d => d.label.toLowerCase().indexOf(q) !== -1);
+  const checkedDocs = docs.filter(d => checked.has(d.key));
+  const restDocs = docs.filter(d => !checked.has(d.key));
+  return checkedDocs.concat(restDocs);
 }
 
 // Авто-привязка: для обычных (не "КД"/пакет) обозначений, уже найденных по
