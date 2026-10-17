@@ -112,14 +112,14 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .modal-select{height:30px;border:1px solid var(--brd);border-radius:var(--r);padding:0 8px;font-family:inherit;font-size:12px;background:var(--surf);color:var(--tx)}
 .modal-search{height:30px;border:1px solid var(--brd);border-radius:var(--r);padding:0 8px;font-family:inherit;font-size:12px;background:var(--surf);color:var(--tx);width:100%;box-sizing:border-box;flex-shrink:0}
 .modal-search:focus{outline:none;border-color:var(--acc)}
-.modal-combo{display:flex;flex-direction:column;border:1px solid var(--brd);border-radius:var(--r);overflow:hidden}
-.modal-combo:focus-within{border-color:var(--acc)}
-.modal-combo .modal-search{border:none;border-radius:0;border-bottom:1px solid var(--brd)}
-.modal-combo .modal-search:focus{border-color:transparent;border-bottom-color:var(--acc)}
-.modal-rootlist{display:flex;flex-direction:column;gap:2px;padding:6px;max-height:140px;overflow-y:auto}
-.modal-root-row{font-size:12px;font-family:var(--mono);padding:4px 6px;border-radius:4pt;cursor:pointer}
-.modal-root-row:hover{background:var(--surf2)}
-.modal-root-row.active{background:var(--acc);color:#fff}
+.root-combo{width:100%}
+.root-search{background:var(--surf) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239E9C94' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 8px center;padding-right:26px}
+.root-dropdown{display:none;position:fixed;background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);max-height:220px;overflow-y:auto;z-index:1100;box-shadow:0 4px 12px rgba(0,0,0,.12);text-align:left}
+.root-dropdown.open{display:block}
+.root-option{padding:6px 9px;font-size:12px;font-family:var(--mono);color:var(--tx);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.root-option:hover,.root-option.hl{background:var(--acc-bg);color:var(--acc)}
+.root-option.active{font-weight:600}
+.root-option-empty{padding:6px 9px;font-size:11px;color:var(--tx2);cursor:default}
 .modal-doclist{display:flex;flex-direction:column;gap:4px;border:1px solid var(--brd);border-radius:var(--r);padding:8px;max-height:280px;overflow-y:auto}
 .modal-doc-row{display:flex;align-items:center;gap:7px;font-size:12px;font-family:var(--mono);padding:7px 4px;border-radius:4pt;cursor:pointer}
 .modal-doc-row:hover{background:var(--surf2)}
@@ -171,7 +171,7 @@ tr.cs-row-history .cs-end-cell,tr.cs-row-history .cs-date-cell{font-size:11px}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.12.1</footer>
+<footer class="ver-footer">v0.12.2</footer>
 <div id="gTooltip"></div>
 <div id="linkModalRoot"></div>
 
@@ -211,7 +211,7 @@ const S = {
   showHidden: false,
   lastGroups: new Map(), // ключ группы -> актуальная группа (для setHidden/автопоказа)
   expandedKeys: new Set(), // ключ группы -> развёрнута ли история старых договоров
-  linkModal: null, // { orderId, rootId, checked:Set<key>, rootQuery, docQuery } — открытая карточка привязки документов
+  linkModal: null, // { orderId, rootId, checked:Set<key>, docQuery } — открытая карточка привязки документов
 };
 
 let firstLoadDone = false;
@@ -509,21 +509,10 @@ function openLinkModal(id) {
   const products = productsForOrder(order);
   const roots = allRoots();
   const rootId = products.length ? ('c:' + products[0].id) : (roots.length ? roots[0].id : null);
-  S.linkModal = { orderId: id, rootId, checked, rootQuery: '', docQuery: '' };
+  S.linkModal = { orderId: id, rootId, checked, docQuery: '' };
   renderLinkModal();
 }
-function closeLinkModal() { S.linkModal = null; renderLinkModal(); }
-function setLinkModalRoot(encodedRootId) {
-  if (!S.linkModal) return;
-  S.linkModal.rootId = decodeURIComponent(encodedRootId);
-  refreshRootList();
-  refreshDocList();
-}
-function onLinkRootQuery(value) {
-  if (!S.linkModal) return;
-  S.linkModal.rootQuery = value;
-  refreshRootList();
-}
+function closeLinkModal() { destroyRootCombo(); S.linkModal = null; renderLinkModal(); }
 function onLinkDocQuery(value) {
   if (!S.linkModal) return;
   S.linkModal.docQuery = value;
@@ -555,18 +544,113 @@ async function saveLinkModal() {
   }
 }
 
-// Список корневых изделий — рендерится отдельным фрагментом (#linkRootList),
-// чтобы ввод в поле поиска (onLinkRootQuery) не пересоздавал сам инпут и не
-// сбивал фокус/курсор на каждую нажатую клавишу.
-function rootListHtml() {
-  const roots = filterRoots(S.linkModal.rootQuery);
-  if (!roots.length) return '<div class="modal-empty">Ничего не найдено</div>';
-  return roots.map(r => `
-    <div class="modal-root-row${r.id === S.linkModal.rootId ? ' active' : ''}" onclick="setLinkModalRoot('${encodeURIComponent(r.id)}')">${esc(rootLabel(r))}</div>`).join('');
-}
-function refreshRootList() {
-  const el = document.getElementById('linkRootList');
-  if (el) el.innerHTML = rootListHtml();
+// Корневое изделие — комбобокс с выпадающим списком (как firm-combo в
+// widget-Archive-Inventories): список висит в <body> с position:fixed
+// (иначе его обрежет overflow модалки), закрыт по умолчанию, открывается
+// по фокусу. Ввод в поле — это поиск/фильтр списка, а не прямое изменение
+// значения: значение меняется только выбором варианта (клик/Enter).
+let rootCombo = null;
+function destroyRootCombo() { if (rootCombo) { rootCombo.close(); rootCombo = null; } }
+function createRootCombo(initialRootId, onChange) {
+  let rootId = initialRootId || null;
+  let hlIndex = -1;
+  let matches = [];
+
+  const combo = document.createElement('div');
+  combo.className = 'root-combo';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'modal-search root-search';
+  input.autocomplete = 'off';
+  input.placeholder = 'Поиск по номеру или наименованию…';
+  const dropdown = document.createElement('div');
+  dropdown.className = 'root-dropdown';
+  combo.appendChild(input);
+
+  function labelFor(id) {
+    const r = id ? S.rootsById[id] : null;
+    return r ? rootLabel(r) : '';
+  }
+  function setRoot(id) {
+    rootId = id || null;
+    input.value = labelFor(rootId);
+    if (onChange) onChange(rootId);
+  }
+  input.value = labelFor(rootId);
+
+  function renderDropdown() {
+    // Пока в поле текст текущего выбора (а не правка пользователя) — показываем весь список.
+    const query = (rootId && input.value === labelFor(rootId)) ? '' : input.value;
+    matches = filterRoots(query);
+    if (hlIndex >= matches.length) hlIndex = matches.length - 1;
+    dropdown.innerHTML = '';
+    if (!matches.length) {
+      const empty = document.createElement('div');
+      empty.className = 'root-option-empty';
+      empty.textContent = 'Ничего не найдено';
+      dropdown.appendChild(empty);
+      return;
+    }
+    matches.forEach((r, i) => {
+      const opt = document.createElement('div');
+      opt.className = 'root-option' + (i === hlIndex ? ' hl' : '') + (r.id === rootId ? ' active' : '');
+      opt.textContent = rootLabel(r);
+      opt.title = rootLabel(r);
+      opt.addEventListener('mousedown', e => {
+        e.preventDefault();
+        setRoot(r.id);
+        close();
+        input.blur();
+      });
+      dropdown.appendChild(opt);
+    });
+  }
+
+  const BOTTOM_RESERVE = 30;
+  function position() {
+    const rect = input.getBoundingClientRect();
+    const below = window.innerHeight - rect.bottom - BOTTOM_RESERVE;
+    const above = rect.top - 4;
+    const up = below < 160 && above > below;
+    const maxH = Math.max(80, Math.min(220, up ? above : below));
+    dropdown.style.left = rect.left + 'px';
+    dropdown.style.width = rect.width + 'px';
+    dropdown.style.maxHeight = maxH + 'px';
+    if (up) { dropdown.style.top = ''; dropdown.style.bottom = (window.innerHeight - rect.top + 2) + 'px'; }
+    else { dropdown.style.bottom = ''; dropdown.style.top = (rect.bottom + 2) + 'px'; }
+  }
+  function onViewportChange() {
+    if (!input.isConnected) { close(); return; }
+    if (dropdown.classList.contains('open')) position();
+  }
+  function open() {
+    renderDropdown();
+    if (!dropdown.parentNode) {
+      document.body.appendChild(dropdown);
+      window.addEventListener('scroll', onViewportChange, true);
+      window.addEventListener('resize', onViewportChange);
+    }
+    dropdown.classList.add('open');
+    position();
+  }
+  function close() {
+    dropdown.classList.remove('open');
+    if (dropdown.parentNode) dropdown.parentNode.removeChild(dropdown);
+    window.removeEventListener('scroll', onViewportChange, true);
+    window.removeEventListener('resize', onViewportChange);
+  }
+
+  input.addEventListener('focus', () => { hlIndex = -1; input.select(); open(); });
+  input.addEventListener('input', () => { hlIndex = matches.length ? 0 : -1; open(); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); hlIndex = Math.min(hlIndex + 1, matches.length - 1); open(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); hlIndex = Math.max(hlIndex - 1, 0); open(); }
+    else if (e.key === 'Enter') { if (hlIndex >= 0 && matches[hlIndex]) { e.preventDefault(); setRoot(matches[hlIndex].id); close(); input.blur(); } }
+    else if (e.key === 'Escape') { close(); input.blur(); }
+  });
+  input.addEventListener('blur', () => { close(); input.value = labelFor(rootId); });
+
+  return { el: combo, getRootId: () => rootId, setRoot, close };
 }
 
 // Список документов выбранного корня — тоже отдельный фрагмент (#linkDocList),
@@ -590,6 +674,7 @@ function refreshDocList() {
 
 function renderLinkModal() {
   const rootEl = document.getElementById('linkModalRoot');
+  destroyRootCombo();
   if (!S.linkModal) { rootEl.innerHTML = ''; return; }
   const order = S.orderLikesById[S.linkModal.orderId];
   if (!order) { S.linkModal = null; rootEl.innerHTML = ''; return; }
@@ -606,10 +691,7 @@ function renderLinkModal() {
         </div>
         <div class="modal-body">
           <label class="modal-label">Корневое изделие (ЕСКД/ЕСПД/ЕСТД)</label>
-          <div class="modal-combo">
-            <input class="modal-search" type="text" placeholder="Поиск по номеру или наименованию…" value="${esc(S.linkModal.rootQuery)}" oninput="onLinkRootQuery(this.value)">
-            <div class="modal-rootlist" id="linkRootList">${rootListHtml()}</div>
-          </div>
+          <div id="linkRootComboMount"></div>
           <label class="modal-label">Документы изделия</label>
           <input class="modal-search" type="text" placeholder="Поиск по документу…" value="${esc(S.linkModal.docQuery)}" oninput="onLinkDocQuery(this.value)">
           <div class="modal-doclist" id="linkDocList">${docListHtml()}</div>
@@ -621,6 +703,11 @@ function renderLinkModal() {
         </div>
       </div>
     </div>`;
+  rootCombo = createRootCombo(S.linkModal.rootId, rootId => {
+    S.linkModal.rootId = rootId;
+    refreshDocList();
+  });
+  document.getElementById('linkRootComboMount').appendChild(rootCombo.el);
 }
 
 /* ═══════════════════════════════════
