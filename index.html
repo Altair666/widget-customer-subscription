@@ -100,6 +100,22 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 
 .eye-btn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid transparent;border-radius:4pt;background:transparent;color:var(--tx3);cursor:pointer;transition:all .1s;padding:0}
 .eye-btn:hover{background:var(--surf3);color:var(--tx)}
+.cs-row-actions{display:flex;align-items:center;justify-content:center;gap:2px}
+
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:1000}
+.modal-card{width:420px;max-height:80vh;background:var(--surf);border-radius:6pt;box-shadow:0 12px 32px rgba(0,0,0,.25);display:flex;flex-direction:column;overflow:hidden}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--brd);background:var(--surf2)}
+.modal-title{font-size:13px;font-weight:600;color:var(--tx)}
+.modal-sub{font-size:11px;color:var(--tx3);margin-top:2px}
+.modal-body{padding:12px 14px;overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:8px}
+.modal-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3)}
+.modal-select{height:30px;border:1px solid var(--brd);border-radius:var(--r);padding:0 8px;font-family:inherit;font-size:12px;background:var(--surf);color:var(--tx)}
+.modal-doclist{display:flex;flex-direction:column;gap:4px;border:1px solid var(--brd);border-radius:var(--r);padding:8px;max-height:280px;overflow-y:auto}
+.modal-doc-row{display:flex;align-items:center;gap:7px;font-size:12px;font-family:var(--mono);padding:3px 2px;border-radius:4pt;cursor:pointer}
+.modal-doc-row:hover{background:var(--surf2)}
+.modal-empty{font-size:12px;color:var(--tx3);font-style:italic;padding:8px 2px}
+.modal-foot{display:flex;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--brd);background:var(--surf2)}
+.modal-count{font-size:11px;color:var(--tx3);margin-right:auto}
 
 tr.cs-row-expired td{opacity:.5}
 tr.cs-row-expired .cs-client{color:var(--tx2)}
@@ -145,8 +161,9 @@ tr.cs-row-history .cs-end-cell,tr.cs-row-history .cs-date-cell{font-size:11px}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.10.1</footer>
+<footer class="ver-footer">v0.11.0</footer>
 <div id="gTooltip"></div>
+<div id="linkModalRoot"></div>
 
 <script>
 const CS_TABLE = 'Customer_subscription';
@@ -180,6 +197,7 @@ const S = {
   showHidden: false,
   lastGroups: new Map(), // ключ группы -> актуальная группа (для setHidden/автопоказа)
   expandedKeys: new Set(), // ключ группы -> развёрнута ли история старых договоров
+  linkModal: null, // { orderId, rootId, checked:Set<key> } — открытая карточка привязки документов
 };
 
 let firstLoadDone = false;
@@ -244,11 +262,14 @@ async function autoSync() {
   if (syncing || typeof grist === 'undefined') return;
   syncing = true;
   try {
+    rebuildDerived(); // актуализирует S.orderLikesById/S.docsByKey перед планом привязки
     const { creates, updates } = computeSyncPlan();
-    if (!creates.length && !updates.length) return;
+    const docLinkUpdates = computeDocLinkPlan();
+    if (!creates.length && !updates.length && !docLinkUpdates.length) return;
     setConn(true, 'Синхронизация…');
     for (const c of creates) await grist.selectedTable.create({ fields: c.fields });
     for (const u of updates) await grist.selectedTable.update({ id: u.id, fields: u.fields });
+    for (const u of docLinkUpdates) await grist.selectedTable.update({ id: u.id, fields: u.fields });
     await loadRecords();
   } catch (e) {
     console.error('Ошибка автосинхронизации:', e);
@@ -438,6 +459,94 @@ function toggleShowHidden() {
 }
 
 /* ═══════════════════════════════════
+   КАРТОЧКА ПРИВЯЗКИ ДОКУМЕНТОВ — ручная/проверочная привязка документов
+   заказа к инвентарной книге (поверх автоматического текстового
+   сопоставления), для случаев пакетных покупок (КД/лицензия) и опечаток
+   в doc_filtered. Пишет linked_documents (RefList:Inventory_book) заказа.
+═══════════════════════════════════ */
+function openLinkModal(id) {
+  const order = S.orderLikesById[id];
+  if (!order) return;
+  const checked = new Set(order.linkedIds.map(lid => S.docsById[lid]).filter(Boolean).map(d => d.key));
+  const products = productsForOrder(order);
+  const roots = allRootComponents();
+  const rootId = products.length ? products[0].id : (roots.length ? roots[0].id : 0);
+  S.linkModal = { orderId: id, rootId, checked };
+  renderLinkModal();
+}
+function closeLinkModal() { S.linkModal = null; renderLinkModal(); }
+function setLinkModalRoot(rootId) {
+  if (!S.linkModal) return;
+  S.linkModal.rootId = Number(rootId);
+  renderLinkModal();
+}
+function toggleLinkDoc(encodedKey) {
+  if (!S.linkModal) return;
+  const key = decodeURIComponent(encodedKey);
+  if (S.linkModal.checked.has(key)) S.linkModal.checked.delete(key);
+  else S.linkModal.checked.add(key);
+  renderLinkModal();
+}
+async function saveLinkModal() {
+  if (!S.linkModal) return;
+  const ids = [];
+  S.linkModal.checked.forEach(key => {
+    const list = S.docsByKey[key];
+    if (!list || !list.length) return;
+    ids.push(list.reduce((a, b) => (a.id < b.id ? a : b)).id);
+  });
+  const orderId = S.linkModal.orderId;
+  try {
+    await grist.selectedTable.update({ id: orderId, fields: { linked_documents: ['L', ...ids] } });
+    S.linkModal = null;
+    await loadRecords();
+  } catch (e) {
+    console.error('Ошибка сохранения привязки документов:', e);
+    alert('Не удалось сохранить привязку: ' + e.message);
+  }
+}
+function renderLinkModal() {
+  const root = document.getElementById('linkModalRoot');
+  if (!S.linkModal) { root.innerHTML = ''; return; }
+  const order = S.orderLikesById[S.linkModal.orderId];
+  if (!order) { S.linkModal = null; root.innerHTML = ''; return; }
+  const rec = S.records.find(r => r.id === S.linkModal.orderId);
+  const roots = allRootComponents();
+  const docs = docsForRoot(S.linkModal.rootId);
+  root.innerHTML = `
+    <div class="modal-backdrop" onclick="closeLinkModal()">
+      <div class="modal-card" onclick="event.stopPropagation()">
+        <div class="modal-head">
+          <div>
+            <div class="modal-title">Привязка документов</div>
+            <div class="modal-sub">${esc(order.client || '—')} · ${esc((rec && rec.shipment_contract) || '—')}</div>
+          </div>
+          <button class="cell-edit-btn cancel" onclick="closeLinkModal()" title="Закрыть">${xSvg()}</button>
+        </div>
+        <div class="modal-body">
+          <label class="modal-label">Корневое изделие</label>
+          <select class="modal-select" onchange="setLinkModalRoot(this.value)">
+            ${roots.map(r => `<option value="${r.id}" ${r.id === S.linkModal.rootId ? 'selected' : ''}>${esc(r.name || r.dn || ('#' + r.id))}</option>`).join('')}
+          </select>
+          <div class="modal-doclist">
+            ${docs.length ? docs.map(d => `
+              <label class="modal-doc-row">
+                <input type="checkbox" ${S.linkModal.checked.has(d.key) ? 'checked' : ''} onchange="toggleLinkDoc('${encodeURIComponent(d.key)}')">
+                <span>${esc(d.label)}</span>
+              </label>`).join('')
+              : '<div class="modal-empty">Нет документов с версией &gt; 0 у этого изделия</div>'}
+          </div>
+        </div>
+        <div class="modal-foot">
+          <span class="modal-count">${S.linkModal.checked.size} выбрано</span>
+          <button class="btn" onclick="closeLinkModal()">Отмена</button>
+          <button class="btn btn-primary" onclick="saveLinkModal()">Сохранить</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* ═══════════════════════════════════
    РЕДАКТИРОВАНИЕ: время обслуживания — окно правки (карандаш → инпут → ✓/✕),
    как в остальных наших Grist-виджетах. Сохранение и подтверждает срок:
    service_confirmed выставляется вместе со service_years за один вызов.
@@ -602,10 +711,17 @@ function rebuildDerived() {
 }
 
 // Строка Customer_subscription как "заказ" в терминах плана отправки.
+// linked_documents (RefList:Inventory_book) — обозначения, привязанные к
+// заказу вручную (карточка привязки) или автоматически (computeDocLinkPlan),
+// добавляются в bought наравне с текстовыми — это решает случаи пакетных
+// покупок (КД/лицензия) и опечаток в doc_filtered без замены текстового
+// сопоставления.
 function toOrderLike(r) {
   const docText = String(r.doc_filtered || '');
   const bought = {};
   docText.split(';').forEach(tok => { const k = normDes(tok); if (k) bought[k] = true; });
+  const linkedIds = refListIds(r.linked_documents);
+  linkedIds.forEach(id => { const d = S.docsById[id]; if (d && d.key) bought[d.key] = true; });
   return {
     id: r.id,
     client: normFirm(r.client),
@@ -614,8 +730,62 @@ function toOrderLike(r) {
     dns: extractDns(docText),
     docText,
     bought,
-    allKd: !!bought['КД']
+    allKd: !!bought['КД'],
+    linkedIds
   };
+}
+
+// Все корневые изделия справочника Components (для выбора в карточке привязки).
+function allRootComponents() {
+  const seen = {};
+  const out = [];
+  Object.keys(S.componentsById).forEach(k => {
+    const r = rootComponent(S.componentsById[k]);
+    if (r && !seen[r.id]) { seen[r.id] = true; out.push(r); }
+  });
+  return out.sort((a, b) => String(a.name || a.dn).localeCompare(String(b.name || b.dn), 'ru'));
+}
+
+// Документы изделия (по корню), у которых есть версия > 0 в инвентарной книге —
+// список для карточки привязки (чекбоксы).
+function docsForRoot(rootId) {
+  const out = [];
+  Object.keys(S.docsByKey).forEach(key => {
+    const list = S.docsByKey[key];
+    if (!list.some(d => d.root === rootId)) return;
+    const maxV = Math.max(...list.map(d => d.version || 0));
+    if (maxV <= 0) return;
+    out.push({ key, label: list[0].des });
+  });
+  return out.sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+}
+
+// Авто-привязка: для обычных (не "КД"/пакет) обозначений, уже найденных по
+// тексту doc_filtered в инвентарной книге, но ещё не записанных в
+// linked_documents, — дописываем их туда автоматически. Пакеты (КД/лицензия)
+// и обозначения, не найденные в инвентарной книге (вероятная опечатка),
+// требуют ручной привязки через карточку — их эта функция не трогает и
+// ничего из linked_documents никогда не удаляет.
+function computeDocLinkPlan() {
+  const updates = [];
+  S.records.forEach(r => {
+    if (!r.shipment_contract) return;
+    const order = S.orderLikesById[r.id];
+    if (!order || order.allKd) return;
+    const curIds = refListIds(r.linked_documents);
+    const curKeys = new Set(curIds.map(id => S.docsById[id]).filter(Boolean).map(d => d.key));
+    const addIds = [];
+    String(r.doc_filtered || '').split(';').forEach(tok => {
+      const k = normDes(tok);
+      if (!k || k === 'КД' || curKeys.has(k)) return;
+      const list = S.docsByKey[k];
+      if (!list || !list.length) return;
+      addIds.push(list.reduce((a, b) => (a.id < b.id ? a : b)).id);
+      curKeys.add(k);
+    });
+    if (addIds.length) updates.push({ id: r.id, fields: { linked_documents: ['L', ...curIds, ...addIds] } });
+  });
+  return updates;
 }
 
 // Основные изделия заказа (по децимальным номерам из doc_filtered).
@@ -954,11 +1124,14 @@ function renderTable() {
           : '<span class="cs-end-cell cs-end-empty">—</span>'}
       </td>
       <td style="text-align:center">
-        <button class="eye-btn" title="${hidden ? 'Показать' : 'Скрыть'}" onclick="setHidden('${encodeURIComponent(g.key)}', ${!hidden})">
-          ${hidden
-            ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
-            : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'}
-        </button>
+        <div class="cs-row-actions">
+          <button class="eye-btn" title="${hidden ? 'Показать' : 'Скрыть'}" onclick="setHidden('${encodeURIComponent(g.key)}', ${!hidden})">
+            ${hidden
+              ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+              : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'}
+          </button>
+          <button class="eye-btn" title="Привязать документы вручную" onclick="openLinkModal(${p.id})">${linkSvg()}</button>
+        </div>
       </td>
     </tr>`;
   }).join('');
@@ -987,6 +1160,7 @@ function pencilSvg() { return '<svg width="12" height="12" viewBox="0 0 24 24" f
 function checkSvg() { return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>'; }
 function xSvg() { return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>'; }
 function statusDocSvg() { return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>'; }
+function linkSvg() { return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'; }
 function chevronSvg(open) {
   return open
     ? '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>'
