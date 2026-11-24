@@ -60,6 +60,10 @@ html,body{height:100%;overflow:hidden;font-family:var(--sans);font-size:13px;col
 .reg-table tr:last-child td{border-bottom:none}
 .reg-table tr:hover td{background:var(--surf2)}
 .reg-table tr.cs-client-start td{border-top:2px solid var(--brd2)}
+.reg-sort-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:none;border-radius:3px;background:transparent;color:var(--tx3);cursor:pointer;padding:0;flex-shrink:0;opacity:.45;transition:all .1s}
+.reg-sort-btn.on{opacity:1;color:var(--grn)}
+.reg-sort-btn:hover{background:var(--grn-bg);color:var(--grn);opacity:1}
+.reg-th-sort{display:inline-flex;align-items:center;gap:4px}
 .reg-empty{padding:20px;text-align:center;color:var(--tx3);font-size:12px}
 
 .cs-client{font-weight:600;color:var(--tx)}
@@ -171,7 +175,7 @@ tr.cs-row-history .cs-end-cell,tr.cs-row-history .cs-date-cell{font-size:11px}
   <div class="conn-dot" id="connDot"></div>
   <span class="conn-lbl" id="connLbl">Ожидание Grist…</span>
 </div>
-<footer class="ver-footer">v0.12.2</footer>
+<footer class="ver-footer">v0.13.0</footer>
 <div id="gTooltip"></div>
 <div id="linkModalRoot"></div>
 
@@ -212,6 +216,7 @@ const S = {
   lastGroups: new Map(), // ключ группы -> актуальная группа (для setHidden/автопоказа)
   expandedKeys: new Set(), // ключ группы -> развёрнута ли история старых договоров
   linkModal: null, // { orderId, rootId, checked:Set<key>, docQuery } — открытая карточка привязки документов
+  tableSort: { key: 'client', dir: 'asc' }, // кнопки сортировки в шапке — как в виджете описей; в памяти, не персистится
 };
 
 let firstLoadDone = false;
@@ -1200,6 +1205,27 @@ function computeRowSpans(items, keyFn) {
 /* ═══════════════════════════════════
    РЕНДЕР ТАБЛИЦЫ
 ═══════════════════════════════════ */
+// Кнопка сортировки в шапке — как в виджете описей (widget-Archive-Inventories,
+// по образцу widget-decimalnumber): нажатие на активную меняет направление,
+// на другую — сортирует по её столбцу.
+function sortHead(label, key) {
+  const on = S.tableSort.key === key, desc = !on || S.tableSort.dir === 'desc';
+  const title = on
+    ? (desc ? 'Сортировка: убывание (нажмите для возрастания)' : 'Сортировка: возрастание (нажмите для убывания)')
+    : 'Сортировать по этому столбцу';
+  return `<span class="reg-th-sort">${esc(label)}` +
+    `<button class="reg-sort-btn${on ? ' on' : ''}" type="button" onclick="toggleTableSort('${key}')" title="${title}">` +
+    (desc
+      ? '<svg width="10" height="12" viewBox="0 0 10 12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 1v10M1 7l4 4 4-4"/></svg>'
+      : '<svg width="10" height="12" viewBox="0 0 10 12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 11V1M1 5l4-4 4 4"/></svg>') +
+    '</button></span>';
+}
+function toggleTableSort(key) {
+  if (S.tableSort.key === key) S.tableSort.dir = S.tableSort.dir === 'desc' ? 'asc' : 'desc';
+  else S.tableSort = { key, dir: 'asc' };
+  renderTable();
+}
+
 function renderTable() {
   rebuildDerived();
   const container = document.getElementById('tableBody');
@@ -1230,12 +1256,27 @@ function renderTable() {
     const pr = !g._expired ? 1 : 0;
     clientPriority.set(g.client, Math.max(clientPriority.get(g.client) || 0, pr));
   });
-  groups.sort((a, b) =>
-    (clientPriority.get(b.client) || 0) - (clientPriority.get(a.client) || 0) ||
-    String(a.client || '').localeCompare(String(b.client || ''), 'ru') ||
-    (a._expired ? 1 : 0) - (b._expired ? 1 : 0) || // действующие — перед истёкшими, в пределах клиента
-    String(a.group || '').localeCompare(String(b.group || ''), 'ru') ||
-    String(a.doc_filtered || '').localeCompare(String(b.doc_filtered || ''), 'ru'));
+
+  // Кнопки сортировки в шапке (как в виджете описей): явный столбец становится
+  // главным критерием; остальные сравнения — фиксированные тайбрейки, не
+  // зависящие от направления (как `-byNum` в описях). Только для «Клиента»
+  // (вид по умолчанию) сохраняется приоритет «действующие наверху» — он же
+  // держит rowspan-объединение ячеек осмысленным.
+  const srt = S.tableSort, sign = srt.dir === 'asc' ? 1 : -1;
+  const cmpText = (x, y) => String(x || '').localeCompare(String(y || ''), 'ru');
+  groups.sort((a, b) => {
+    if (srt.key === 'group') return sign * cmpText(a.group, b.group) || cmpText(a.client, b.client) || cmpText(a.doc_filtered, b.doc_filtered);
+    if (srt.key === 'doc') return sign * cmpText(a.doc_filtered, b.doc_filtered) || cmpText(a.client, b.client) || cmpText(a.group, b.group);
+    if (srt.key === 'end') {
+      const ae = a.primary.service_end, be = b.primary.service_end;
+      return ((ae == null) - (be == null)) || sign * ((ae || 0) - (be || 0)) || cmpText(a.client, b.client) || cmpText(a.group, b.group);
+    }
+    return (clientPriority.get(b.client) || 0) - (clientPriority.get(a.client) || 0) ||
+      sign * cmpText(a.client, b.client) ||
+      (a._expired ? 1 : 0) - (b._expired ? 1 : 0) || // действующие — перед истёкшими, в пределах клиента
+      cmpText(a.group, b.group) ||
+      cmpText(a.doc_filtered, b.doc_filtered);
+  });
 
   if (!groups.length) {
     container.innerHTML = '<div class="reg-empty">Нет данных. Договоры подтягиваются автоматически из Tu_accounting.</div>';
@@ -1388,12 +1429,12 @@ function renderTable() {
   container.innerHTML = `
     <table class="reg-table">
       <thead><tr>
-        <th style="width:16%">Клиент</th>
-        <th style="width:12%">Группа</th>
-        <th style="width:24%">Документ</th>
+        <th style="width:16%">${sortHead('Клиент', 'client')}</th>
+        <th style="width:12%">${sortHead('Группа', 'group')}</th>
+        <th style="width:24%">${sortHead('Документ', 'doc')}</th>
         <th style="width:14%">Оплата</th>
         <th style="width:14%">Время обслуживания</th>
-        <th style="width:14%">Окончание обслуживания</th>
+        <th style="width:14%">${sortHead('Окончание обслуживания', 'end')}</th>
         <th style="width:6%"></th>
       </tr></thead>
       <tbody>${body}</tbody>
